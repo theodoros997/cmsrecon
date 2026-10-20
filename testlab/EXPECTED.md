@@ -10,7 +10,7 @@ What a correct scan of the lab reports, and what it must not report. `check-lab.
 |---|---|
 | WordPress 5.8.1 | Meta generator, feed `<generator>`, `?ver=` on core assets |
 | Main theme `twentytwenty` 1.8 | Homepage stylesheet, `Version:` in its `style.css` |
-| Installed themes | `twentynineteen`, `twentytwenty`, `twentytwentyone` (bundled) |
+| Installed themes | `twentynineteen`, `twentytwenty`, `twentytwentyone` (bundled); the two inactive ones only with brute force (`--themes-detection mixed`) |
 | Headers | `Server: Apache/2.4.51 (Debian)`, `X-Powered-By: PHP/7.4.25` |
 
 ### Interesting findings (17)
@@ -41,8 +41,8 @@ What a correct scan of the lab reports, and what it must not report. `check-lab.
 |---|---|---|---|
 | `contact-form-7` | 5.3.1 | active | `?ver=5.3.1` on its assets, `readme.txt`, REST namespace `contact-form-7/v1` |
 | `wordpress-seo` (Yoast) | 15.0 | active | "Yoast SEO plugin v15.0" HTML comment, `readme.txt`, REST namespace `yoast/v1` |
-| `duplicator` | 1.3.26 | inactive | Aggressive only: `readme.txt` |
-| `akismet` | 4.1.12 | inactive | Folder exists; its `.htaccess` blocks `readme.txt`, so "version unknown" is correct until hash fingerprinting (v1.1) |
+| `duplicator` | 1.3.26 | inactive | Brute force only (`--plugins-detection mixed`), then `readme.txt` |
+| `akismet` | 4.1.12 | inactive | Brute force only; its `.htaccess` blocks `readme.txt`, so "version unknown" is correct until hash fingerprinting (v1.1) |
 
 Hello Dolly (`/wp-content/plugins/hello.php`, a single-file plugin) is optional: few scanners look for single-file plugins.
 

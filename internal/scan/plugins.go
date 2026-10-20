@@ -19,6 +19,7 @@ const (
 	confPluginRESTKnown    = 90  // a REST namespace the plugin registers
 	confPluginRESTGuess    = 60  // a REST namespace named like a known plugin
 	confPluginGenerator    = 60  // a "<slug> <version>" meta generator
+	confPluginPostType     = 80  // a post type only that plugin registers
 	confVersionStableTag   = 80
 	confVersionChangelog   = 60
 	confVersionSignature   = 80
@@ -29,10 +30,14 @@ const (
 // their slug and version, e.g. "performance-lab 3.2.0; plugins: ...".
 var genericGeneratorRe = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*[a-z0-9]) v?([0-9]+(?:\.[0-9]+)+)(?:[;\s]|$)`)
 
-// detectPlugins finds plugins: passively from page URLs, signatures and
-// REST namespaces, and aggressively by brute force (-e vp, p or ap), then
-// reads each plugin's readme for its version. With --wp-auth the REST
-// inventory replaces all of this. core is the detected WordPress version.
+// detectPlugins finds the plugins the site uses, then reads each one's
+// readme for its version. Discovery (--plugins-detection passive, the
+// default, or mixed) reads the URLs and signatures of the homepage, the
+// 404 page and the crawled pages, the REST API namespaces, the post types
+// in the sitemaps and the plugins directory listing. Brute force of the -e
+// list (vp, p or ap) only runs with --plugins-detection mixed or
+// aggressive. With --wp-auth the REST inventory replaces all of this. core
+// is the detected WordPress version.
 func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 	if inv := s.restInventory(ctx); inv != nil {
 		for _, p := range inv.plugins {
@@ -42,13 +47,25 @@ func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 	}
 	set := newComponentSet()
 	prefix := s.content.Path + "plugins/"
-	if s.passive() {
-		s.pluginsFromPages(set, prefix, core)
-		s.pluginsFromSignatures(set)
-		s.pluginsFromREST(ctx, set)
+	mode := s.opts.PluginsDetection
+	if mode.Discover() {
+		pages := s.discoveryPages(ctx)
+		s.pluginsFromPages(set, pages, prefix, core)
+		s.pluginsFromSignatures(set, pages)
+		if s.passive() {
+			s.pluginsFromREST(ctx, set)
+		}
+		if s.aggressive() {
+			s.fromListing(ctx, set, "plugins/", nil)
+			s.pluginsFromPostTypes(ctx, set)
+		}
 	}
-	if s.aggressive() && s.opts.Enumerate.Plugins != cli.ItemsNone {
-		s.bruteForce(ctx, set, "Plugins", "plugins/", s.bruteList(wordlists.Plugins, s.opts.Enumerate.Plugins))
+	list := s.opts.Enumerate.Plugins
+	switch {
+	case mode.BruteForce() && s.aggressive() && list != cli.ItemsNone:
+		s.bruteForce(ctx, set, "Plugins", "plugins/", s.bruteList(wordlists.Plugins, list))
+	case !mode.BruteForce() && (list == cli.ItemsPopular || list == cli.ItemsAll):
+		s.notice("-e %sp only chooses the plugins to brute-force, which --plugins-detection passive (the default) does not do: the plugins were found from what the site shows. Use --plugins-detection mixed to also check every plugin on the list.", itemCode(list))
 	}
 
 	comps := set.list()
@@ -86,12 +103,53 @@ func (s *Scanner) bruteForce(ctx context.Context, set *componentSet, label, dir 
 	}
 }
 
-// pluginsFromPages finds plugin directories in the URLs of the homepage
-// and the 404 page, and reads ?ver= from the plugins' assets.
-func (s *Scanner) pluginsFromPages(set *componentSet, prefix string, core *Version) {
+// itemCode is the -e prefix of a list: "v", "" or "a".
+func itemCode(set cli.ItemSet) string {
+	switch set {
+	case cli.ItemsVulnerable:
+		return "v"
+	case cli.ItemsAll:
+		return "a"
+	}
+	return ""
+}
+
+// fromListing adds the plugins or themes a directory listing of dir
+// ("plugins/" or "themes/") shows, inactive ones included: one request
+// that, on a misconfigured server, lists everything installed. Slugs in
+// skip (lower case) are left out.
+func (s *Scanner) fromListing(ctx context.Context, set *componentSet, dir string, skip map[string]bool) {
+	u := s.contentURL(dir)
+	names, ok := s.listingEntries(s.get(ctx, u))
+	if !ok {
+		return
+	}
+	for _, n := range names {
+		slug, isDir := strings.CutSuffix(n, "/")
+		if isDir && slug != "" && slug != "." && slug != ".." && !strings.Contains(slug, "/") && !skip[strings.ToLower(slug)] {
+			set.add(slug, Evidence{Method: "Directory listing", Mode: modeAggressive, URL: u, Value: n, Confidence: 100})
+		}
+	}
+}
+
+// pluginsFromPostTypes maps the post types and taxonomies the sitemaps
+// list to the plugins that register them (WooCommerce's "product", The
+// Events Calendar's "tribe_events", ...).
+func (s *Scanner) pluginsFromPostTypes(ctx context.Context, set *componentSet) {
+	for kind, u := range s.sitePages(ctx).postTypes {
+		if slug := wordlists.PostTypePlugin(kind); slug != "" {
+			set.add(slug, Evidence{Method: "Post type in the sitemap", Mode: modeAggressive, URL: u, Value: kind, Confidence: confPluginPostType})
+		}
+	}
+}
+
+// pluginsFromPages finds plugin directories in the URLs of the pages, and
+// reads ?ver= from the plugins' assets.
+func (s *Scanner) pluginsFromPages(set *componentSet, pages []labelledPage, prefix string, core *Version) {
 	assets := map[string][]*url.URL{}
 	spelling := map[string]string{}
-	for _, p := range s.pages() {
+	passive := map[string]bool{} // the plugin's assets were seen on a passive page
+	for _, p := range pages {
 		seen := map[string]bool{}
 		for _, u := range p.urls {
 			path, ok := s.sitePath(u)
@@ -107,13 +165,18 @@ func (s *Scanner) pluginsFromPages(set *componentSet, prefix string, core *Versi
 				spelling[k] = slug
 			}
 			assets[k] = append(assets[k], u)
+			passive[k] = passive[k] || p.mode == modePassive
 			if !seen[k] {
 				seen[k] = true
-				set.add(spelling[k], Evidence{Method: "URLs in the " + p.label, Mode: modePassive, URL: p.resp.URL.String(), Value: u.String(), Confidence: confPluginURLs})
+				set.add(spelling[k], Evidence{Method: "URLs in the " + p.label, Mode: p.mode, URL: p.resp.URL.String(), Value: u.String(), Confidence: confPluginURLs})
 			}
 		}
 	}
 	for k, urls := range assets {
+		mode := modeAggressive
+		if passive[k] {
+			mode = modePassive
+		}
 		for v, paths := range s.assetVersions(urls, core) {
 			var example string
 			for _, u := range urls {
@@ -122,22 +185,23 @@ func (s *Scanner) pluginsFromPages(set *componentSet, prefix string, core *Versi
 					break
 				}
 			}
-			set.addVersion(spelling[k], Evidence{Method: "?ver= on the plugin's assets", Mode: modePassive, URL: example, Value: v, Confidence: assetVersionConfidence(len(paths))})
+			set.addVersion(spelling[k], Evidence{Method: "?ver= on the plugin's assets", Mode: mode, URL: example, Value: v, Confidence: assetVersionConfidence(len(paths))})
 		}
 	}
 }
 
-// pluginsFromSignatures applies the passive signatures to the homepage, the
-// 404 page and the homepage headers.
-func (s *Scanner) pluginsFromSignatures(set *componentSet) {
-	hit := func(sig wordlists.Signature, pageURL string, m []string) {
-		set.add(sig.Slug, Evidence{Method: sig.Method, Mode: modePassive, URL: pageURL, Value: truncate(m[0], 120), Confidence: sig.Confidence})
+// pluginsFromSignatures applies the passive signatures to the pages and
+// the homepage headers.
+func (s *Scanner) pluginsFromSignatures(set *componentSet, pages []labelledPage) {
+	hit := func(sig wordlists.Signature, p labelledPage, m []string) {
+		pageURL := p.resp.URL.String()
+		set.add(sig.Slug, Evidence{Method: sig.Method, Mode: p.mode, URL: pageURL, Value: truncate(m[0], 120), Confidence: sig.Confidence})
 		if len(m) > 1 && m[1] != "" {
-			set.addVersion(sig.Slug, Evidence{Method: sig.Method, Mode: modePassive, URL: pageURL, Value: vulndb.Normalize(m[1]), Confidence: confVersionSignature})
+			set.addVersion(sig.Slug, Evidence{Method: sig.Method, Mode: p.mode, URL: pageURL, Value: vulndb.Normalize(m[1]), Confidence: confVersionSignature})
 		}
 	}
 	contentPrefix := s.content.Path
-	for _, p := range s.pages() {
+	for _, p := range pages {
 		pageURL := p.resp.URL.String()
 		var paths []string
 		for _, u := range p.urls {
@@ -151,18 +215,18 @@ func (s *Scanner) pluginsFromSignatures(set *componentSet) {
 			switch sig.Kind {
 			case wordlists.SigHTML:
 				if m := sig.Re.FindStringSubmatch(p.text); m != nil {
-					hit(sig, pageURL, m)
+					hit(sig, p, m)
 				}
 			case wordlists.SigGenerator:
 				for _, g := range p.generators {
 					if m := sig.Re.FindStringSubmatch(g); m != nil {
-						hit(sig, pageURL, m)
+						hit(sig, p, m)
 					}
 				}
 			case wordlists.SigPath:
 				for _, rel := range paths {
 					if sig.Re.MatchString(rel) {
-						hit(sig, pageURL, []string{s.content.String() + rel})
+						hit(sig, p, []string{s.content.String() + rel})
 						break
 					}
 				}
@@ -173,7 +237,7 @@ func (s *Scanner) pluginsFromSignatures(set *componentSet) {
 				for _, v := range p.resp.Header.Values(sig.Header) {
 					if m := sig.Re.FindStringSubmatch(v); m != nil {
 						m[0] = sig.Header + ": " + v
-						hit(sig, pageURL, m)
+						hit(sig, p, m)
 						break
 					}
 				}
@@ -185,8 +249,8 @@ func (s *Scanner) pluginsFromSignatures(set *componentSet) {
 			if m == nil || !s.knownPlugin(m[1]) {
 				continue
 			}
-			set.add(m[1], Evidence{Method: "Meta generator", Mode: modePassive, URL: pageURL, Value: g, Confidence: confPluginGenerator})
-			set.addVersion(m[1], Evidence{Method: "Meta generator", Mode: modePassive, URL: pageURL, Value: m[2], Confidence: confVersionGenericMeta})
+			set.add(m[1], Evidence{Method: "Meta generator", Mode: p.mode, URL: pageURL, Value: g, Confidence: confPluginGenerator})
+			set.addVersion(m[1], Evidence{Method: "Meta generator", Mode: p.mode, URL: pageURL, Value: m[2], Confidence: confVersionGenericMeta})
 		}
 	}
 }
@@ -218,7 +282,7 @@ func (s *Scanner) pluginsFromREST(ctx context.Context, set *componentSet) {
 // plugin's parent directory under wp-content ("plugins/").
 func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *component, dir string) {
 	base := s.contentURL(dir + c.slug + "/")
-	for _, name := range []string{"readme.txt", "README.txt", "readme.md", "README.md"} {
+	for _, name := range []string{"readme.txt", "README.txt"} {
 		u := base + name
 		res := s.get(ctx, u)
 		if res == nil || res.StatusCode != 200 {
@@ -248,7 +312,7 @@ func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *componen
 		break
 	}
 	// No version yet: some plugins keep the changelog in its own file.
-	for _, name := range []string{"changelog.txt", "CHANGELOG.md", "changelog.md"} {
+	for _, name := range []string{"changelog.txt", "CHANGELOG.md"} {
 		u := base + name
 		res := s.get(ctx, u)
 		if res == nil || res.StatusCode != 200 {

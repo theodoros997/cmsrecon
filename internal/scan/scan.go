@@ -49,10 +49,12 @@ type Scanner struct {
 
 	headRefused atomic.Bool // the server answers HEAD with 405 or 501
 
-	restOnce sync.Once
-	restAPI  *restAPI
-	invOnce  sync.Once
-	inv      *inventory
+	restOnce  sync.Once
+	restAPI   *restAPI
+	crawlOnce sync.Once
+	crawled   *crawlResult
+	invOnce   sync.Once
+	inv       *inventory
 
 	mu  sync.Mutex // guards res
 	res *Result
@@ -253,15 +255,27 @@ func (s *Scanner) contentURL(ref string) string {
 
 // pages returns the homepage and the 404 page with a label for evidence.
 func (s *Scanner) pages() []labelledPage {
-	out := []labelledPage{{"homepage", s.home}}
+	out := []labelledPage{{"homepage", modePassive, s.home}}
 	if s.notFound != nil && s.notFound.resp != nil {
-		out = append(out, labelledPage{"404 page", s.notFound})
+		out = append(out, labelledPage{"404 page", modePassive, s.notFound})
 	}
 	return out
 }
 
+// discoveryPages returns the pages plugin, theme, library and user
+// discovery read: the homepage and the 404 page (passive), then the pages
+// the crawl fetched (aggressive).
+func (s *Scanner) discoveryPages(ctx context.Context) []labelledPage {
+	var out []labelledPage
+	if s.passive() {
+		out = s.pages()
+	}
+	return append(out, s.sitePages(ctx).pages...)
+}
+
 type labelledPage struct {
 	label string
+	mode  string // the mode of the signals read from the page
 	*page
 }
 

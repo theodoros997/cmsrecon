@@ -24,6 +24,16 @@ const maxListingEntries = 20
 // signature of the detected web server or, when it is unknown, all of them.
 // It returns the listed names, at most maxListingEntries of them.
 func (s *Scanner) dirListing(res *httpclient.Response) ([]string, bool) {
+	names, ok := s.listingEntries(res)
+	if len(names) > maxListingEntries {
+		more := len(names) - maxListingEntries
+		names = append(names[:maxListingEntries:maxListingEntries], fmt.Sprintf("... and %d more", more))
+	}
+	return names, ok
+}
+
+// listingEntries is dirListing without the cap on the number of names.
+func (s *Scanner) listingEntries(res *httpclient.Response) ([]string, bool) {
 	if res == nil || res.StatusCode != 200 {
 		return nil, false
 	}
@@ -45,10 +55,6 @@ func (s *Scanner) dirListing(res *httpclient.Response) ([]string, bool) {
 			continue
 		}
 		names = append(names, text)
-	}
-	if len(names) > maxListingEntries {
-		more := len(names) - maxListingEntries
-		names = append(names[:maxListingEntries], fmt.Sprintf("... and %d more", more))
 	}
 	return names, true
 }

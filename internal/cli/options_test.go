@@ -154,3 +154,28 @@ func TestParseUpdate(t *testing.T) {
 		t.Errorf("help: %v\n%s", err, help.String())
 	}
 }
+
+func TestDetectionModesAndCrawl(t *testing.T) {
+	o, err := ParseScan([]string{"-u", "example.com"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.PluginsDetection != ModePassive || o.ThemesDetection != ModePassive || o.CrawlPages != DefaultCrawlPages {
+		t.Errorf("defaults = %s, %s, %d", o.PluginsDetection, o.ThemesDetection, o.CrawlPages)
+	}
+	if o.PluginsDetection.BruteForce() || !o.PluginsDetection.Discover() {
+		t.Error("passive discovers and does not brute-force")
+	}
+	o, err = ParseScan([]string{"-u", "example.com", "--plugins-detection", "MIXED", "--themes-detection", "aggressive", "--crawl", "0"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.PluginsDetection.BruteForce() || !o.PluginsDetection.Discover() || !o.ThemesDetection.BruteForce() || o.ThemesDetection.Discover() || o.CrawlPages != 0 {
+		t.Errorf("options = %+v", o)
+	}
+	for _, args := range [][]string{{"--plugins-detection", "loud"}, {"--themes-detection", ""}, {"--crawl", "101"}} {
+		if _, err := ParseScan(append([]string{"-u", "example.com"}, args...), io.Discard); err == nil {
+			t.Errorf("%v: want an error", args)
+		}
+	}
+}

@@ -17,8 +17,11 @@ const (
 )
 
 // enumerateThemes finds the installed themes other than the main theme and
-// its parent: passively from page URLs, aggressively by brute force (-e vt,
-// t or at). Each theme's style.css gives its name and version.
+// its parent. Discovery (--themes-detection passive, the default, or
+// mixed) reads the theme URLs of the homepage, the 404 page and the crawled
+// pages, and the themes directory listing; brute force of the -e list (vt,
+// t or at) only runs with --themes-detection mixed or aggressive. Each
+// theme's style.css gives its name and version.
 func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Theme) []*Theme {
 	exclude := map[string]bool{}
 	for t := main; t != nil; t = t.Parent {
@@ -26,8 +29,12 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 	}
 	set := newComponentSet()
 	prefix := s.content.Path + "themes/"
-	if s.passive() {
-		for _, p := range s.pages() {
+	mode := s.opts.ThemesDetection
+	if mode.Discover() {
+		if s.aggressive() {
+			s.fromListing(ctx, set, "themes/", exclude)
+		}
+		for _, p := range s.discoveryPages(ctx) {
 			seen := map[string]bool{}
 			for _, u := range p.urls {
 				sp, ok := s.sitePath(u)
@@ -41,22 +48,26 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 				}
 				if !seen[k] {
 					seen[k] = true
-					set.add(slug, Evidence{Method: "Theme URLs in the " + p.label, Mode: modePassive, URL: p.resp.URL.String(), Value: u.String(), Confidence: confThemeOtherPageURLs})
+					set.add(slug, Evidence{Method: "Theme URLs in the " + p.label, Mode: p.mode, URL: p.resp.URL.String(), Value: u.String(), Confidence: confThemeOtherPageURLs})
 				}
 				if v := u.Query().Get("ver"); path.Base(sp) == "style.css" && vulndb.Valid(v) && !isCoreVersion(v, core) {
-					set.addVersion(slug, Evidence{Method: "?ver= on the theme's style.css", Mode: modePassive, URL: u.String(), Value: v, Confidence: confThemeStyleVer})
+					set.addVersion(slug, Evidence{Method: "?ver= on the theme's style.css", Mode: p.mode, URL: u.String(), Value: v, Confidence: confThemeStyleVer})
 				}
 			}
 		}
 	}
-	if s.aggressive() && s.opts.Enumerate.Themes != cli.ItemsNone {
+	list := s.opts.Enumerate.Themes
+	switch {
+	case mode.BruteForce() && s.aggressive() && list != cli.ItemsNone:
 		var slugs []string
-		for _, slug := range s.bruteList(wordlists.Themes, s.opts.Enumerate.Themes) {
+		for _, slug := range s.bruteList(wordlists.Themes, list) {
 			if !exclude[strings.ToLower(slug)] {
 				slugs = append(slugs, slug)
 			}
 		}
 		s.bruteForce(ctx, set, "Themes", "themes/", slugs)
+	case !mode.BruteForce() && (list == cli.ItemsPopular || list == cli.ItemsAll):
+		s.notice("-e %st only chooses the themes to brute-force, which --themes-detection passive (the default) does not do: the themes were found from what the site shows. Use --themes-detection mixed to also check every theme on the list.", itemCode(list))
 	}
 
 	comps := set.list()

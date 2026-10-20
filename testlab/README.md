@@ -42,11 +42,19 @@ Download the vulnerability data once (the Wordfence key is optional; without it 
 WORDFENCE_API_KEY=... ./cmsrecon update
 ```
 
+The default scan finds what the site uses (active plugins and the main theme) in about 250 requests:
+
 ```bash
-./cmsrecon -u http://localhost:8080 -e p,t,cb,dbe,bf,u1-5
+./cmsrecon -u http://localhost:8080 -e vp,vt,cb,dbe,bf,u1-5
 ```
 
-Add `-v` to see how each item was found and to list the possible vulnerabilities, or `-e vp,vt,cb,dbe,bf,u1-5` to brute-force only the slugs with known vulnerabilities.
+The inactive Duplicator and the unused themes only show up with brute force, as in the WPScan command below:
+
+```bash
+./cmsrecon -u http://localhost:8080 -e p,t,cb,dbe,bf,u1-5 --plugins-detection mixed --themes-detection mixed
+```
+
+Add `-v` to see how each item was found and to list the possible vulnerabilities.
 
 With WPScan, for comparison (Kali WSL reaches the lab on `localhost`):
 

@@ -204,9 +204,14 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 	if o.WPAuth != nil {
 		row("Plugins and themes", "REST API inventory as "+o.WPAuth.Username)
 	} else {
-		row("Plugins", e.Plugins.String())
-		row("Themes", e.Themes.String())
+		row("Plugins", detectionPlan(o, o.PluginsDetection, e.Plugins, "plugins"))
+		row("Themes", detectionPlan(o, o.ThemesDetection, e.Themes, "themes"))
 	}
+	crawl := "homepage and 404 page only"
+	if o.CrawlPages > 0 && o.DetectionMode != cli.ModePassive {
+		crawl = fmt.Sprintf("up to %d more pages, plus the login page", o.CrawlPages)
+	}
+	row("Pages read", crawl)
 	users := "no"
 	if e.Users != nil {
 		users = "author IDs " + e.Users.String()
@@ -231,6 +236,23 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 	row("Report", fmt.Sprintf("%s to %s", o.Format, dest))
 	row("Data", o.DataDir)
 	tw.Flush()
+}
+
+// detectionPlan describes how plugins or themes will be found.
+func detectionPlan(o *cli.ScanOptions, mode cli.DetectionMode, list cli.ItemSet, what string) string {
+	var parts []string
+	if mode.Discover() {
+		parts = append(parts, "found on the site")
+	}
+	switch {
+	case mode.BruteForce() && o.DetectionMode == cli.ModePassive:
+		parts = append(parts, "no brute force in passive detection mode")
+	case mode.BruteForce() && list != cli.ItemsNone:
+		parts = append(parts, fmt.Sprintf("brute force of %s %s", list, what))
+	case mode.BruteForce():
+		parts = append(parts, "nothing to brute-force (-e has no "+what+" list)")
+	}
+	return strings.Join(parts, ", then ")
 }
 
 func yesNo(b bool) string {

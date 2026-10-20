@@ -167,6 +167,7 @@ func TestComponentsAndVulnerabilities(t *testing.T) {
 	f := newFakeWP(t).addComponentSite()
 	o := options(f.URL(), cli.ModeMixed)
 	o.Enumerate = fullEnumeration()
+	o.PluginsDetection, o.ThemesDetection = cli.ModeMixed, cli.ModeMixed
 	o.DataDir = writeData(t)
 	r := runScan(t, o)
 	if r.Status != StatusCompleted {
@@ -302,6 +303,7 @@ func TestVulnerablePluginList(t *testing.T) {
 	f := newFakeWP(t).addComponentSite()
 	o := options(f.URL(), cli.ModeAggressive)
 	o.Enumerate = cli.Enumeration{Plugins: cli.ItemsVulnerable}
+	o.PluginsDetection = cli.ModeMixed
 	o.DataDir = writeData(t)
 	r := runScan(t, o)
 	if pluginBySlug(r, "duplicator") == nil || pluginBySlug(r, "akismet") == nil {
@@ -319,6 +321,7 @@ func TestPluginsWithoutData(t *testing.T) {
 	f := newFakeWP(t).addComponentSite()
 	o := options(f.URL(), cli.ModeMixed)
 	o.Enumerate = cli.Enumeration{Plugins: cli.ItemsVulnerable}
+	o.PluginsDetection = cli.ModeMixed
 	o.DataDir = t.TempDir()
 	r := runScan(t, o)
 	// The built-in popular list still finds the inactive plugin.
@@ -352,6 +355,7 @@ func TestBruteForceOnCatchAllSites(t *testing.T) {
 			o := options(f.URL(), cli.ModeMixed)
 			o.Force = true
 			o.Enumerate = fullEnumeration()
+			o.PluginsDetection, o.ThemesDetection = cli.ModeMixed, cli.ModeMixed
 			r := runScan(t, o)
 			for _, p := range r.Plugins {
 				if slices.Contains(methods(p.Evidence), "Known location") {
@@ -389,6 +393,7 @@ func TestBruteForceWhenHEADIsRefused(t *testing.T) {
 	})
 	o := options(f.URL(), cli.ModeAggressive)
 	o.Enumerate = cli.Enumeration{Plugins: cli.ItemsPopular}
+	o.PluginsDetection = cli.ModeAggressive
 	o.DataDir = t.TempDir()
 	o.Threads = 1
 	r := runScan(t, o)
@@ -420,6 +425,7 @@ func TestRESTInventory(t *testing.T) {
 
 	o := options(f.URL(), cli.ModeMixed)
 	o.Enumerate = cli.Enumeration{Plugins: cli.ItemsAll, Themes: cli.ItemsAll}
+	o.PluginsDetection, o.ThemesDetection = cli.ModeMixed, cli.ModeMixed
 	o.DataDir = writeData(t)
 	o.WPAuth = &cli.Credentials{Username: "admin", Password: "abcd efgh ijkl"}
 	r := runScan(t, o)
@@ -492,5 +498,129 @@ func TestSiteAlias(t *testing.T) {
 		if got := siteAlias(tt.host, tt.base); got != tt.want {
 			t.Errorf("siteAlias(%s, %s) = %v", tt.host, tt.base, got)
 		}
+	}
+}
+
+// addDiscoverySite extends the component site with pages that each load a
+// plugin the homepage does not: an inner page, a product page listed in
+// the sitemap, a post with a comment form, and the login page.
+func (f *fakeWP) addDiscoverySite() *fakeWP {
+	f.addComponentSite()
+	home := strings.Replace(pluginHomepage, "<article>", `<nav><a href="{{URL}}contact/">Contact</a> <a href="{{URL}}contact/#form">Form</a>
+<a href="{{URL}}2026/10/hello-world/">Hello</a> <a href="{{URL}}wp-admin/">Admin</a> <a href="{{URL}}?add-to-cart=12">Buy</a>
+<a href="https://other.example/">Elsewhere</a> <a href="{{URL}}wp-content/uploads/2026/10/file.pdf">PDF</a></nav><article>`, 1)
+	f.routes["/"] = respond(200, "text/html; charset=UTF-8", home, "Link", `<{{URL}}wp-json/>; rel="https://api.w.org/"`)
+	page := func(body string) http.HandlerFunc {
+		return respond(200, "text/html; charset=UTF-8", "<html><head><title>Lab</title>"+body+"</head><body></body></html>")
+	}
+	f.routes["/contact/"] = page(`<link rel='stylesheet' href='{{URL}}wp-content/plugins/wpforms-lite/assets/css/wpforms-full.min.css?ver=1.6.3' />`)
+	f.routes["/2026/10/hello-world/"] = page(`</head><body><form id="commentform"><input type="hidden" name="ak_js" value="1" /></form>`)
+	f.routes["/product/hoodie/"] = page(`<meta name="generator" content="WooCommerce 5.1.0" /><script src='{{URL}}wp-content/plugins/woocommerce-gateway-stripe/assets/js/stripe.min.js?ver=5.0.0'></script>`)
+	f.routes["/about/"] = page(`<script src='{{URL}}wp-content/plugins/smart-slider-3/Public/SmartSlider3/Application/Frontend/Assets/dist/smartslider-frontend.min.js?ver=3.5.0.8'></script>`)
+	f.routes["/wp-login.php"] = page(`<link rel='stylesheet' href='{{URL}}wp-content/plugins/limit-login-attempts-reloaded/assets/css/login-page-styles.css?ver=2.25.0' />
+</head><body><form name="loginform" id="loginform" action="wp-login.php" method="post">`)
+	f.routes["/wp-sitemap.xml"] = respond(200, "application/xml", `<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<sitemap><loc>{{URL}}wp-sitemap-posts-page-1.xml</loc></sitemap>
+<sitemap><loc>{{URL}}wp-sitemap-posts-product-1.xml</loc></sitemap>
+<sitemap><loc>{{URL}}wp-sitemap-taxonomies-category-1.xml</loc></sitemap>
+<sitemap><loc>{{URL}}wp-sitemap-users-1.xml</loc></sitemap></sitemapindex>`)
+	f.routes["/wp-sitemap-posts-page-1.xml"] = respond(200, "application/xml",
+		`<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{{URL}}</loc></url><url><loc>{{URL}}about/</loc></url></urlset>`)
+	f.routes["/wp-sitemap-posts-product-1.xml"] = respond(200, "application/xml",
+		`<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{{URL}}product/hoodie/</loc></url></urlset>`)
+	return f
+}
+
+func TestDefaultScanDiscoversWithoutBruteForce(t *testing.T) {
+	f := newFakeWP(t).addDiscoverySite()
+	o := options(f.URL(), cli.ModeMixed)
+	o.Enumerate = cli.Enumeration{Plugins: cli.ItemsAll, Themes: cli.ItemsVulnerable}
+	o.DataDir = writeData(t)
+	r := runScan(t, o)
+
+	var slugs []string
+	for _, p := range r.Plugins {
+		slugs = append(slugs, p.Slug)
+	}
+	want := []string{"akismet", "contact-form-7", "limit-login-attempts-reloaded", "redirection", "smart-slider-3",
+		"woocommerce", "woocommerce-gateway-stripe", "wordpress-seo", "wpforms-lite"}
+	if !slices.Equal(slugs, want) {
+		t.Errorf("plugins = %v\nwant %v", slugs, want)
+	}
+	wc := pluginBySlug(r, "woocommerce")
+	if wc == nil || !slices.Contains(methods(wc.Evidence), "Post type in the sitemap") || wc.Version.Number != "5.1.0" {
+		t.Errorf("woocommerce = %+v", wc)
+	}
+	if wp := pluginBySlug(r, "wpforms-lite"); wp == nil || wp.Evidence[0].Mode != modeAggressive || wp.Version.Number != "1.6.3" || wp.Version.Confidence != 40 {
+		t.Errorf("wpforms-lite (crawled contact page) = %+v, version %+v", wp, wp.Version)
+	}
+	if pluginBySlug(r, "duplicator") != nil {
+		t.Error("an inactive plugin can only be found by brute force or a listing, and neither applies")
+	}
+	cf7 := pluginBySlug(r, "contact-form-7")
+	if len(cf7.Vulnerabilities) != 1 || cf7.Vulnerabilities[0].Verdict != VerdictConfirmed {
+		t.Errorf("vulnerabilities are still matched on discovered plugins: %+v", cf7.Vulnerabilities)
+	}
+
+	reqs := f.requested()
+	for _, req := range reqs {
+		if strings.HasPrefix(req, "HEAD ") || req == "GET /wp-admin/" || strings.Contains(req, "add-to-cart") || strings.Contains(req, ".pdf") || strings.Contains(req, "other.example") {
+			t.Errorf("unexpected request %s", req)
+		}
+	}
+	if !slices.Contains(reqs, "GET /product/hoodie/") || !slices.Contains(reqs, "GET /contact/") || !slices.Contains(reqs, "GET /about/") {
+		t.Errorf("the crawl missed a page: %v", reqs)
+	}
+	if len(reqs) > 120 {
+		t.Errorf("%d requests; discovery should need far fewer", len(reqs))
+	}
+	t.Logf("%d requests", len(reqs))
+
+	found := false
+	for _, n := range r.Notices {
+		found = found || strings.Contains(n, "--plugins-detection mixed")
+	}
+	if !found {
+		t.Errorf("-e ap without brute force should say how to brute-force: %v", r.Notices)
+	}
+}
+
+func TestDirectoryListingDiscovery(t *testing.T) {
+	f := newFakeWP(t).addComponentSite()
+	f.routes["/wp-content/plugins/"] = respond(200, "text/html",
+		`<html><head><title>Index of /wp-content/plugins</title></head><body><h1>Index of /wp-content/plugins</h1><a href="/wp-content/">Parent Directory</a><a href="akismet/">akismet/</a><a href="duplicator/">duplicator/</a><a href="hello.php">hello.php</a><a href="index.php">index.php</a></body></html>`)
+	f.routes["/wp-content/themes/"] = respond(200, "text/html",
+		`<html><head><title>Index of /wp-content/themes</title></head><body><h1>Index of /wp-content/themes</h1><a href="twentynineteen/">twentynineteen/</a><a href="twentytwenty/">twentytwenty/</a></body></html>`)
+	o := options(f.URL(), cli.ModeMixed)
+	o.DataDir = writeData(t)
+	r := runScan(t, o)
+	dup := pluginBySlug(r, "duplicator")
+	if dup == nil || !slices.Contains(methods(dup.Evidence), "Directory listing") || dup.Version.Number != "1.3.26" || len(dup.Vulnerabilities) != 1 {
+		t.Errorf("duplicator from the listing = %+v", dup)
+	}
+	if pluginBySlug(r, "hello.php") != nil || pluginBySlug(r, "index.php") != nil {
+		t.Error("files in the listing are not plugins")
+	}
+	if len(r.Themes) != 1 || r.Themes[0].Slug != "twentynineteen" {
+		t.Errorf("themes from the listing = %+v (the main theme stays out of the list)", r.Themes)
+	}
+}
+
+func TestCrawlIsOff(t *testing.T) {
+	for name, o := range map[string]func(*cli.ScanOptions){
+		"passive mode": func(o *cli.ScanOptions) { o.DetectionMode = cli.ModePassive },
+		"--crawl 0":    func(o *cli.ScanOptions) { o.CrawlPages = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeWP(t).addDiscoverySite()
+			opts := options(f.URL(), cli.ModeMixed)
+			o(opts)
+			runScan(t, opts)
+			for _, req := range f.requested() {
+				if strings.Contains(req, "/contact/") || strings.Contains(req, "sitemap") {
+					t.Errorf("crawled %s", req)
+				}
+			}
+		})
 	}
 }

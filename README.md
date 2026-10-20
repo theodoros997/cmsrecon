@@ -39,7 +39,7 @@ Then scan:
 cmsrecon -u https://example.com
 cmsrecon scan https://example.com -v --proxy http://127.0.0.1:8080
 cmsrecon scan https://example.com --detection-mode passive -f json -o report.json
-cmsrecon -u https://example.com -e ap,at,cb,dbe,bf,u1-20
+cmsrecon -u https://example.com --plugins-detection mixed -e vp,vt   # also brute-force plugin folders
 cmsrecon -u https://example.com --dry-run
 cmsrecon scan -h
 cmsrecon update -h
@@ -49,7 +49,21 @@ Without `cmsrecon update`, a scan still detects plugins, themes, libraries and v
 
 `cmsrecon update` stores its data in `--data-dir` (default: `<user cache dir>/cmsrecon`). Each source is replaced atomically and independently, so a source that fails keeps its previous data. The CVE List is a daily release of about 500 MB; it is downloaded only when a new release is out. The downloads use the `HTTPS_PROXY` environment variable or `--proxy`.
 
-`-e` takes the same choices as WPScan's `--enumerate`: `vp`/`p`/`ap` (vulnerable, popular or all plugins), `vt`/`t`/`at` (themes), `cb` (config backups), `dbe` (database exports), `bf` (backup folders) and `u[RANGE]` (users). The default is `vp,vt,cb,dbe,bf,u`. The vulnerable lists come from the vulnerability data and the full lists from WordPress.org, both downloaded by `cmsrecon update`; without them the popular lists are used and the report says so. Plugins and themes found passively are always reported, whatever the list.
+### How plugins and themes are found
+
+By default cmsrecon finds the plugins and themes the site actually uses, then matches vulnerabilities against those, in a few dozen requests. A default scan of a typical site sends about 250 requests in total, most of them for the backup-file checks.
+
+- **Pages:** it reads the homepage, a 404 page and up to 10 more pages, one of each kind (`--crawl N` changes the number). Pages are picked from the sitemaps, one per post type such as a page, a post or a product, and from the homepage's links, one per section. The login page is always read. Only links are followed: nothing is guessed, and links with side effects (add to cart, log out) are skipped. Different templates load different plugins: a shop page shows the payment plugins, a contact page the form plugin, the login page the security and captcha plugins.
+- **Asset links and signatures:** in every page read, it looks for `/wp-content/plugins/<name>/` and `/themes/<name>/` links, 160 signatures (HTML comments, generator tags, JavaScript settings, CSS classes, headers, cache folders) and the version hints in `?ver=`.
+- **REST API and sitemaps:** the REST API index names the plugins that register routes (`yoast/v1` is Yoast SEO), and the sitemaps' post types name more (`product` is WooCommerce).
+- **Directory listings:** one request each to `/wp-content/plugins/` and `/wp-content/themes/`. On a misconfigured server, these list everything installed, inactive plugins included.
+- **Versions:** each plugin found gets its `readme.txt` read for its name and version, and each theme its `style.css`.
+
+This is what WPScan does by default (its `--plugins-detection` is `passive`), plus the crawl, the REST API, the sitemaps and the listings, which WPScan does not read.
+
+Inactive plugins load nothing on the pages, so only brute force finds them: `--plugins-detection mixed` (or `--themes-detection mixed`) also requests the folder of every plugin on the `-e` list, one request each. That is thousands of requests: the vulnerable list holds about 17,000 plugins after `cmsrecon update`. As in WPScan, `aggressive` brute-forces without the discovery.
+
+`-e` takes the same choices as WPScan's `--enumerate`: `vp`/`p`/`ap` (vulnerable, popular or all plugins), `vt`/`t`/`at` (themes), `cb` (config backups), `dbe` (database exports), `bf` (backup folders) and `u[RANGE]` (users). The default is `vp,vt,cb,dbe,bf,u`. The plugin and theme lists only matter with brute force. They come from `cmsrecon update`: the vulnerable lists from the vulnerability data, the full lists from WordPress.org. Without them the popular lists are used and the report says so. For the quietest scan, `-e vp,vt,u` skips the backup-file guesses and `--detection-mode passive` reads only the homepage, the 404 page and its feeds.
 
 `--detection-mode` works as in WPScan: `passive` only reads pages the scan fetches anyway, `aggressive` only runs the checks that request specific paths, and `mixed` (the default) runs both. `-v` shows how each finding was detected and how confident cmsrecon is. The JSON format is documented in [docs/json-report.md](docs/json-report.md).
 
@@ -74,7 +88,7 @@ The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in t
 - **Pre-flight:** reachability, redirects, WordPress detection, unfinished installs
 - **Interesting findings:** exposed logs, dumps, backup folders, readme, directory listings, XML-RPC, open registration, multisite and more
 - **WordPress core version** from feeds, meta tags, assets and file hashes
-- **Themes and plugins:** discovery from page URLs, REST API namespaces, 160 passive signatures (130 plugins) and path brute force, versions from readmes, changelogs, `style.css` and `?ver=`, and whether each is outdated
+- **Themes and plugins:** discovery from a small crawl, sitemaps, REST API namespaces, 160 passive signatures (130 plugins) and directory listings, with optional brute force; versions from readmes, changelogs, `style.css` and `?ver=`, and whether each is outdated
 - **JavaScript libraries:** jQuery, Bootstrap, Lodash, Moment and 60 more, from script URLs and version banners
 - **Users:** REST API, oEmbed, feeds, sitemaps and author IDs
 - **Exposed backups:** `wp-config.php` copies, database exports and backup plugin folders

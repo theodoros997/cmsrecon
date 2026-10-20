@@ -20,6 +20,7 @@ type page struct {
 	links       []pageLink // <link> elements
 	bodyClasses []string
 	urls        []*url.URL // every http(s) URL the page references, resolved and deduplicated
+	anchors     []*url.URL // <a href> links, in page order
 }
 
 type pageLink struct {
@@ -96,6 +97,13 @@ func parsePage(resp *httpclient.Response) *page {
 			}
 		case "body":
 			p.bodyClasses = strings.Fields(attrs["class"])
+		case "a":
+			if href := strings.TrimSpace(attrs["href"]); href != "" && !strings.HasPrefix(href, "#") {
+				if u, err := resp.URL.Parse(href); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+					u.Fragment = ""
+					p.anchors = append(p.anchors, u)
+				}
+			}
 		}
 		for name, val := range attrs {
 			switch {

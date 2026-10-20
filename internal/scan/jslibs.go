@@ -28,8 +28,8 @@ type jsCandidate struct {
 }
 
 // detectJSLibraries finds the JavaScript libraries (and a few CSS ones)
-// the homepage and the 404 page load: passively from their URLs, and
-// aggressively from the version banners in the scripts themselves.
+// the pages load: from their URLs, and aggressively from the version
+// banners in the scripts themselves.
 func (s *Scanner) detectJSLibraries(ctx context.Context) []*JSLibrary {
 	var mu sync.Mutex
 	libs := map[string]*jsCandidate{}
@@ -44,24 +44,25 @@ func (s *Scanner) detectJSLibraries(ctx context.Context) []*JSLibrary {
 		if where != "" && len(c.urls) < 5 && !slices.Contains(c.urls, where) {
 			c.urls = append(c.urls, where)
 		}
-		if e != nil {
+		if e != nil && !slices.ContainsFunc(c.versions, func(o Evidence) bool { return o.Method == e.Method && o.Value == e.Value }) {
 			c.versions = append(c.versions, *e)
 		}
 	}
 
-	var scripts []string
-	seen := map[string]bool{}
-	for _, p := range s.pages() {
+	for _, p := range s.discoveryPages(ctx) {
 		for _, u := range p.urls {
-			if !isAsset(u) {
-				continue
-			}
-			if s.passive() {
+			if isAsset(u) {
 				for _, d := range s.data.js.FromURL(u) {
-					add(d, u.String(), jsURLEvidence(d, u))
+					add(d, u.String(), jsURLEvidence(d, u, p.mode))
 				}
 			}
-			if s.client.InScope(u) && strings.HasSuffix(strings.ToLower(u.Path), ".js") && !seen[u.String()] {
+		}
+	}
+	var scripts []string
+	seen := map[string]bool{}
+	for _, p := range append(s.pages(), s.sitePages(ctx).pages...) {
+		for _, u := range p.urls {
+			if isAsset(u) && s.client.InScope(u) && strings.HasSuffix(strings.ToLower(u.Path), ".js") && !seen[u.String()] {
 				seen[u.String()] = true
 				scripts = append(scripts, u.String())
 			}
@@ -101,11 +102,11 @@ func isAsset(u *url.URL) bool {
 	return ext == ".js" || ext == ".css" || strings.Contains(u.Path, "@")
 }
 
-func jsURLEvidence(d vulndb.JSDetection, u *url.URL) *Evidence {
+func jsURLEvidence(d vulndb.JSDetection, u *url.URL, mode string) *Evidence {
 	if d.Version == "" {
 		return nil
 	}
-	e := &Evidence{Mode: modePassive, URL: u.String(), Value: d.Version}
+	e := &Evidence{Mode: mode, URL: u.String(), Value: d.Version}
 	switch d.Method {
 	case vulndb.JSMethodURL, vulndb.JSMethodFilename:
 		e.Method, e.Confidence = "Version in the URL", confJSURL

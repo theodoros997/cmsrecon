@@ -124,15 +124,15 @@ func (s *Scanner) enumerateUsers(ctx context.Context) []*User {
 		return nil
 	}
 	us := &userSet{}
-	if s.passive() {
-		for _, p := range s.pages() {
-			for _, u := range s.scopedURLs(p.page) {
-				if m := authorPathRe.FindStringSubmatch(u.Path); m != nil {
-					slug, _ := url.PathUnescape(m[1])
-					us.add(0, slug, "", Evidence{Method: "Author links in the " + p.label, Mode: modePassive, URL: p.resp.URL.String(), Value: u.String(), Confidence: confUserAuthorLink})
-				}
+	for _, p := range s.discoveryPages(ctx) {
+		for _, u := range s.scopedURLs(p.page) {
+			if m := authorPathRe.FindStringSubmatch(u.Path); m != nil {
+				slug, _ := url.PathUnescape(m[1])
+				us.add(0, slug, "", Evidence{Method: "Author links in the " + p.label, Mode: p.mode, URL: p.resp.URL.String(), Value: u.String(), Confidence: confUserAuthorLink})
 			}
 		}
+	}
+	if s.passive() {
 		for _, f := range s.linkedFeeds() {
 			s.usersFromFeed(ctx, us, f, modePassive)
 		}
