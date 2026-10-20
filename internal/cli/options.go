@@ -303,6 +303,8 @@ Detection:
                                 dbe           database exports
                                 bf            backup folders with directory listing
                                 u[RANGE]      users, checking author IDs RANGE (default u1-10)
+                              The vulnerable and all lists need "cmsrecon update"; until
+                              then the popular lists are used
       --detection-mode MODE   passive, mixed or aggressive (default mixed)
 
 HTTP:
@@ -325,7 +327,7 @@ Output:
       --dry-run               Print the scan plan and exit without sending any request
 
 Data:
-      --data-dir DIR          Where the vulnerability database is stored
+      --data-dir DIR          Where "cmsrecon update" stored the vulnerability data
                               (default: <user cache dir>/cmsrecon)
 
 Exit codes:

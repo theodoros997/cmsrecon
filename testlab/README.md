@@ -36,11 +36,17 @@ With cmsrecon:
 go build -o cmsrecon ./cmd/cmsrecon
 ```
 
+Download the vulnerability data once (the Wordfence key is optional; without it the CVE List is the only vulnerability source):
+
+```bash
+WORDFENCE_API_KEY=... ./cmsrecon update
+```
+
 ```bash
 ./cmsrecon -u http://localhost:8080 -e p,t,cb,dbe,bf,u1-5
 ```
 
-Until the scan engine is merged, add `--dry-run` to see the scan plan instead.
+Add `-v` to see how each item was found and to list the possible vulnerabilities, or `-e vp,vt,cb,dbe,bf,u1-5` to brute-force only the slugs with known vulnerabilities.
 
 With WPScan, for comparison (Kali WSL reaches the lab on `localhost`):
 

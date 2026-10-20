@@ -45,9 +45,45 @@ func sampleResult() *scan.Result {
 			Parent: &scan.Theme{Slug: "parent", Location: "https://example.com/wp-content/themes/parent/", Confidence: 100,
 				Version: &scan.Version{Candidates: []scan.Candidate{}, Evidence: []scan.Evidence{}}, Evidence: []scan.Evidence{}},
 		},
-		Notices: []string{"Not implemented yet, skipped: users (u1-10)."},
-		Errors:  []scan.RequestError{{URL: "https://example.com/feed/", Error: "timeout"}},
-		Stats:   scan.Stats{Requests: 42, BytesSent: 9000, BytesReceived: 1500000, ElapsedSeconds: 4.2},
+		Themes: []*scan.Theme{{
+			Slug: "twentytwenty", Location: "https://example.com/wp-content/themes/twentytwenty/", StyleURL: "https://example.com/wp-content/themes/twentytwenty/style.css",
+			Confidence: 80, Version: &scan.Version{Candidates: []scan.Candidate{}, Evidence: []scan.Evidence{}}, Evidence: ev,
+		}},
+		Plugins: []*scan.Plugin{{
+			Slug: "contact-form-7", Name: "Contact Form 7", Location: "https://example.com/wp-content/plugins/contact-form-7/",
+			ReadmeURL: "https://example.com/wp-content/plugins/contact-form-7/readme.txt", Confidence: 100,
+			Version: &scan.Version{Number: "5.3.1", Confidence: 92, Latest: "6.1", Outdated: true,
+				Candidates: []scan.Candidate{{Number: "5.3.1", Confidence: 92}},
+				Evidence:   []scan.Evidence{{Method: "readme.txt Stable tag", Mode: "aggressive", URL: "https://example.com/wp-content/plugins/contact-form-7/readme.txt", Value: "5.3.1", Confidence: 80}}},
+			Evidence: []scan.Evidence{{Method: "readme.txt", Mode: "aggressive", URL: "https://example.com/wp-content/plugins/contact-form-7/readme.txt", Confidence: 100}},
+			Vulnerabilities: []scan.Vulnerability{{
+				Title: "Contact Form 7 <= 5.3.1 - Unrestricted File Upload", Verdict: scan.VerdictConfirmed, Severity: scan.SeverityCritical,
+				CVSS: 9.8, CVE: []string{"CVE-2020-35489"}, CWE: "CWE-434", Affected: []string{"<= 5.3.1"}, FixedIn: "5.3.2",
+				Published: "2020-12-17", Sources: []string{"wordfence", "cve"},
+				References: []string{"https://www.wordfence.com/threat-intel/vulnerabilities/id/a1", "https://contactform7.com/"},
+			}, {
+				Title: "Contact Form 7 < 5.0 - Old XSS", Verdict: scan.VerdictPossible, Severity: scan.SeverityMedium,
+				Affected: []string{"< 5.0"}, Sources: []string{"cve"}, Note: "The sources disagree",
+			}},
+		}},
+		JSLibraries: []*scan.JSLibrary{{
+			Name: "jquery", URLs: []string{"https://example.com/wp-includes/js/jquery/jquery.min.js?ver=1.12.4"},
+			Version: &scan.Version{Number: "1.12.4", Confidence: 80, Candidates: []scan.Candidate{{Number: "1.12.4", Confidence: 80}}, Evidence: []scan.Evidence{}},
+			Vulnerabilities: []scan.Vulnerability{{Title: "Regex in its jQuery.htmlPrefilter sometimes may introduce XSS", Verdict: scan.VerdictConfirmed,
+				Severity: scan.SeverityMedium, CVE: []string{"CVE-2020-11022"}, Affected: []string{">= 1.2, < 3.5.0"}, FixedIn: "3.5.0", Sources: []string{"retirejs"}}},
+		}},
+		Users: []*scan.User{
+			{ID: 1, Username: "admin", DisplayName: "Site Admin", Confidence: 100, Evidence: ev},
+			{DisplayName: "Guest Writer", Confidence: 60, Evidence: ev},
+		},
+		VulnerabilityData: &scan.DataInfo{Directory: "/data", Sources: []scan.DataSource{
+			{Name: "wordfence", UpdatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC), Entries: 30000},
+		}},
+		VulnerabilityCounts: scan.VulnCounts{Confirmed: 2, Possible: 1},
+		CoreVulnerabilities: []scan.Vulnerability{},
+		Notices:             []string{"The vulnerability data is 9 days old: run \"cmsrecon update\" to refresh it."},
+		Errors:              []scan.RequestError{{URL: "https://example.com/feed/", Error: "timeout"}},
+		Stats:               scan.Stats{Requests: 42, BytesSent: 9000, BytesReceived: 1500000, ElapsedSeconds: 4.2},
 	}
 }
 
@@ -78,8 +114,9 @@ func TestJSONShape(t *testing.T) {
 		got  map[string]any
 		want []string
 	}{
-		{"top level", doc, []string{"detection_mode", "errors", "finished_at", "interesting_findings", "main_theme", "notices",
-			"schema_version", "started_at", "stats", "status", "stop", "target", "tool", "version", "web_server", "wordpress"}},
+		{"top level", doc, []string{"core_vulnerabilities", "detection_mode", "errors", "finished_at", "interesting_findings", "js_libraries",
+			"main_theme", "notices", "plugins", "schema_version", "started_at", "stats", "status", "stop", "target", "themes", "tool",
+			"users", "version", "vulnerability_counts", "vulnerability_data", "web_server", "wordpress"}},
 		{"tool", obj(doc["tool"]), []string{"name", "user_agent", "version"}},
 		{"target", obj(doc["target"]), []string{"effective_url", "redirects", "scope", "url"}},
 		{"redirect", first(obj(doc["target"])["redirects"]), []string{"followed", "from", "reason", "status", "to"}},
@@ -90,7 +127,16 @@ func TestJSONShape(t *testing.T) {
 		{"xmlrpc data", obj(first(doc["interesting_findings"])["data"]), []string{"methods", "pingback_ping", "system_multicall"}},
 		{"version", obj(doc["version"]), []string{"candidates", "confidence", "evidence", "number"}},
 		{"candidate", first(obj(doc["version"])["candidates"]), []string{"confidence", "number"}},
-		{"main_theme", obj(doc["main_theme"]), []string{"confidence", "evidence", "location", "name", "parent", "slug", "style_url", "version"}},
+		{"main_theme", obj(doc["main_theme"]), []string{"confidence", "evidence", "location", "name", "parent", "slug", "style_url", "version", "vulnerabilities"}},
+		{"plugin", first(doc["plugins"]), []string{"confidence", "evidence", "location", "name", "readme_url", "slug", "version", "vulnerabilities"}},
+		{"plugin version", obj(first(doc["plugins"])["version"]), []string{"candidates", "confidence", "evidence", "latest", "number", "outdated"}},
+		{"vulnerability", first(first(doc["plugins"])["vulnerabilities"]), []string{"affected_versions", "cve", "cvss", "cwe", "fixed_in",
+			"published", "references", "severity", "sources", "title", "verdict"}},
+		{"js library", first(doc["js_libraries"]), []string{"name", "urls", "version", "vulnerabilities"}},
+		{"user", first(doc["users"]), []string{"confidence", "display_name", "evidence", "id", "username"}},
+		{"vulnerability_data", obj(doc["vulnerability_data"]), []string{"directory", "sources"}},
+		{"data source", first(obj(doc["vulnerability_data"])["sources"]), []string{"entries", "name", "updated_at"}},
+		{"vulnerability_counts", obj(doc["vulnerability_counts"]), []string{"confirmed", "likely", "possible"}},
 		{"error", first(doc["errors"]), []string{"error", "url"}},
 		{"stats", obj(doc["stats"]), []string{"bytes_received", "bytes_sent", "elapsed_seconds", "requests"}},
 	}
@@ -129,17 +175,28 @@ func TestCLIReport(t *testing.T) {
 	for _, want := range []string{
 		"Effective URL: https://example.com/", "Redirect: http://example.com/ -> https://example.com/ (HTTP 301, followed: in scope)",
 		"Interesting findings (2)", "XML-RPC is enabled", "HIGH", "Debug log exposed", "6.4.2 (confidence 60%)",
-		"child (confidence 70%)", "Parent theme: parent", "Not implemented yet", "1 request failed",
+		"child (confidence 70%)", "Parent theme: parent", "9 days old", "1 request failed",
+		"Other themes (1)", "twentytwenty (confidence 80%)",
+		"Plugins (1)", "[!] contact-form-7 (confidence 100%)", "Name: Contact Form 7",
+		"Version: 5.3.1 (confidence 92%); outdated: the latest is 6.1",
+		"Vulnerabilities: 1 confirmed, 1 possible", "[CRITICAL] Contact Form 7 <= 5.3.1 - Unrestricted File Upload",
+		"confirmed - CVE-2020-35489 - CVSS 9.8 - fixed in 5.3.2", "https://www.wordfence.com/threat-intel/vulnerabilities/id/a1",
+		"1 possible (the version is unknown or uncertain): use -v to list them",
+		"JavaScript libraries (1)", "[!] jquery 1.12.4", "[MEDIUM] Regex in its jQuery.htmlPrefilter",
+		"Users (2)", "admin (ID 1)", "Display name: Site Admin", `"Guest Writer" (display name only; not a username)`,
+		"2 confirmed, 1 possible", "Data: Wordfence (2026-10-19)",
 		"Finished in 4.2s: 42 requests, 8.8 KB sent, 1.4 MB received",
 	} {
 		if !strings.Contains(plain.String(), want) {
 			t.Errorf("CLI report missing %q:\n%s", want, &plain)
 		}
 	}
-	if strings.Contains(plain.String(), "Found by") || strings.Contains(plain.String(), "\x1b[") {
-		t.Errorf("default report must have no evidence and no colours:\n%s", &plain)
+	if strings.Contains(plain.String(), "Found by") || strings.Contains(plain.String(), "\x1b[") || strings.Contains(plain.String(), "Old XSS") {
+		t.Errorf("default report must have no evidence, no colours and no possible vulnerabilities:\n%s", &plain)
 	}
-	for _, want := range []string{"Found by:", "system.listMethods (aggressive, 100%)", "Reference: https://codex", "https://example.com/feed/: timeout"} {
+	for _, want := range []string{"Found by:", "system.listMethods (aggressive, 100%)", "Reference: https://codex", "https://example.com/feed/: timeout",
+		"Old XSS", "The sources disagree", "Affected: <= 5.3.1 (wordfence, cve)", "CWE-434", "https://contactform7.com/",
+		"Readme: https://example.com/wp-content/plugins/contact-form-7/readme.txt", "readme.txt Stable tag (aggressive, 80%): 5.3.1"} {
 		if !strings.Contains(verbose.String(), want) {
 			t.Errorf("verbose report missing %q:\n%s", want, &verbose)
 		}

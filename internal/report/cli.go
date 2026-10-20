@@ -121,14 +121,30 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 		}
 	}
 
-	if len(r.InterestingFindings) > 0 || r.Status == scan.StatusCompleted {
+	completed := r.Status == scan.StatusCompleted
+	if len(r.InterestingFindings) > 0 || completed {
 		p.findings(r.InterestingFindings)
 	}
 	if r.Version != nil {
-		p.version(r.Version)
+		p.version(r.Version, r.CoreVulnerabilities)
 	}
-	if r.Status == scan.StatusCompleted || r.MainTheme != nil {
+	if completed || r.MainTheme != nil {
 		p.theme(r)
+	}
+	if completed || len(r.Themes) > 0 {
+		p.themes(r.Themes)
+	}
+	if completed || len(r.Plugins) > 0 {
+		p.plugins(r.Plugins)
+	}
+	if completed || len(r.JSLibraries) > 0 {
+		p.jsLibraries(r.JSLibraries)
+	}
+	if len(r.Users) > 0 {
+		p.users(r.Users)
+	}
+	if completed || r.Status == scan.StatusInterrupted {
+		p.vulnSummary(r)
 	}
 	p.errors(r.Errors)
 
@@ -211,9 +227,11 @@ func (p *printer) evidence(label, indent string, ev []scan.Evidence) {
 	}
 }
 
-func (p *printer) version(v *scan.Version) {
+func (p *printer) version(v *scan.Version, vulns []scan.Vulnerability) {
 	p.heading("WordPress version")
 	switch {
+	case v.Number != "" && hasStrongVulns(vulns):
+		p.bad("%s (confidence %d%%)", p.style(bold, v.Number), v.Confidence)
 	case v.Number != "":
 		p.good("%s (confidence %d%%)", p.style(bold, v.Number), v.Confidence)
 	case len(v.Candidates) > 0:
@@ -222,6 +240,10 @@ func (p *printer) version(v *scan.Version) {
 	default:
 		p.info("Unknown: no version signal found")
 	}
+	if l := latestText(v); l != "" {
+		p.detail("%s", l)
+	}
+	p.vulns(vulns, "")
 	if p.o.Verbose {
 		if len(v.Candidates) > 1 {
 			var others []string
@@ -245,11 +267,286 @@ func (p *printer) theme(r *scan.Result) {
 		}
 		return
 	}
-	p.good("%s (confidence %d%%)", p.style(bold, t.Slug), t.Confidence)
+	p.componentLine(t.Slug, t.Confidence, t.Vulnerabilities)
 	p.themeDetails(t, "")
 	if t.Parent != nil {
 		p.detail("Parent theme: %s", t.Parent.Slug)
 		p.themeDetails(t.Parent, "  ")
+	}
+}
+
+func (p *printer) themes(ts []*scan.Theme) {
+	p.heading(fmt.Sprintf("Other themes (%d)", len(ts)))
+	if len(ts) == 0 {
+		p.info("None found")
+		return
+	}
+	for i, t := range ts {
+		if i > 0 {
+			p.printf("\n")
+		}
+		p.componentLine(t.Slug, t.Confidence, t.Vulnerabilities)
+		p.themeDetails(t, "")
+	}
+}
+
+func (p *printer) plugins(ps []*scan.Plugin) {
+	p.heading(fmt.Sprintf("Plugins (%d)", len(ps)))
+	if len(ps) == 0 {
+		p.info("None found")
+		return
+	}
+	for i, pl := range ps {
+		if i > 0 {
+			p.printf("\n")
+		}
+		p.componentLine(pl.Slug, pl.Confidence, pl.Vulnerabilities)
+		p.detail("Location: %s", pl.Location)
+		if pl.Name != "" {
+			p.detail("Name: %s", pl.Name)
+		}
+		p.detail("Version: %s", versionText(pl.Version))
+		if p.o.Verbose {
+			if pl.ReadmeURL != "" {
+				p.detail("Readme: %s", pl.ReadmeURL)
+			}
+			p.evidence("Found by", "", pl.Evidence)
+			if pl.Version != nil {
+				p.evidence("Version found by", "", pl.Version.Evidence)
+			}
+		}
+		p.vulns(pl.Vulnerabilities, "")
+	}
+}
+
+func (p *printer) jsLibraries(libs []*scan.JSLibrary) {
+	p.heading(fmt.Sprintf("JavaScript libraries (%d)", len(libs)))
+	if len(libs) == 0 {
+		p.info("None found")
+		return
+	}
+	for i, l := range libs {
+		if i > 0 {
+			p.printf("\n")
+		}
+		name := l.Name
+		if l.Version != nil && l.Version.Number != "" {
+			name += " " + l.Version.Number
+		}
+		switch {
+		case hasStrongVulns(l.Vulnerabilities):
+			p.bad("%s", p.style(bold, name))
+		default:
+			p.good("%s", p.style(bold, name))
+		}
+		if l.Version == nil || l.Version.Number == "" {
+			p.detail("Version: unknown")
+		} else if l.Version.Confidence < 100 {
+			p.detail("Version confidence: %d%%", l.Version.Confidence)
+		}
+		urls := l.URLs
+		if !p.o.Verbose && len(urls) > 1 {
+			urls = urls[:1]
+		}
+		for _, u := range urls {
+			p.detail("%s", u)
+		}
+		if p.o.Verbose && l.Version != nil {
+			p.evidence("Version found by", "", l.Version.Evidence)
+		}
+		p.vulns(l.Vulnerabilities, "")
+	}
+}
+
+func (p *printer) users(us []*scan.User) {
+	p.heading(fmt.Sprintf("Users (%d)", len(us)))
+	for i, u := range us {
+		if i > 0 {
+			p.printf("\n")
+		}
+		label := u.Username
+		if label == "" {
+			label = fmt.Sprintf("%q (display name only; not a username)", u.DisplayName)
+		}
+		if u.ID != 0 {
+			label += fmt.Sprintf(" (ID %d)", u.ID)
+		}
+		p.good("%s", p.style(bold, label))
+		if u.Username != "" && u.DisplayName != "" && u.DisplayName != u.Username {
+			p.detail("Display name: %s", u.DisplayName)
+		}
+		if u.Confidence < 100 {
+			p.detail("Confidence: %d%%", u.Confidence)
+		}
+		if p.o.Verbose {
+			p.evidence("Found by", "", u.Evidence)
+		}
+	}
+}
+
+// componentLine prints the first line of a theme or plugin: a warning
+// when a confirmed or likely vulnerability applies.
+func (p *printer) componentLine(slug string, confidence int, vulns []scan.Vulnerability) {
+	if hasStrongVulns(vulns) {
+		p.bad("%s (confidence %d%%)", p.style(bold, slug), confidence)
+	} else {
+		p.good("%s (confidence %d%%)", p.style(bold, slug), confidence)
+	}
+}
+
+func hasStrongVulns(vs []scan.Vulnerability) bool {
+	for _, v := range vs {
+		if v.Verdict != scan.VerdictPossible {
+			return true
+		}
+	}
+	return false
+}
+
+// versionText describes a component version and how it compares with the
+// latest release.
+func versionText(v *scan.Version) string {
+	if v == nil || v.Number == "" {
+		if v != nil && v.Latest != "" {
+			return "unknown (the latest is " + v.Latest + ")"
+		}
+		return "unknown"
+	}
+	s := fmt.Sprintf("%s (confidence %d%%)", v.Number, v.Confidence)
+	if l := latestText(v); l != "" {
+		s += "; " + strings.ToLower(l[:1]) + l[1:]
+	}
+	return s
+}
+
+func latestText(v *scan.Version) string {
+	switch {
+	case v.Latest == "" || v.Number == "":
+		return ""
+	case v.Outdated:
+		return "Outdated: the latest is " + v.Latest
+	case v.Number == v.Latest:
+		return "The latest release"
+	}
+	return ""
+}
+
+var verdictStyle = map[string]string{
+	scan.VerdictConfirmed: bold,
+	scan.VerdictLikely:    "",
+	scan.VerdictPossible:  dim,
+}
+
+// vulns lists the vulnerabilities of a component. Possible ones (unknown
+// or uncertain version) are counted, and only listed with -v.
+func (p *printer) vulns(vs []scan.Vulnerability, indent string) {
+	if len(vs) == 0 {
+		return
+	}
+	var c scan.VulnCounts
+	var possible int
+	for _, v := range vs {
+		switch v.Verdict {
+		case scan.VerdictConfirmed:
+			c.Confirmed++
+		case scan.VerdictLikely:
+			c.Likely++
+		default:
+			c.Possible++
+		}
+	}
+	p.detail("%s%s: %s", indent, p.style(bold, "Vulnerabilities"), countsText(c))
+	for _, v := range vs {
+		if v.Verdict == scan.VerdictPossible && !p.o.Verbose {
+			possible++
+			continue
+		}
+		p.vuln(v, indent+"  ")
+	}
+	if possible > 0 {
+		p.detail("%s  %d possible (the version is unknown or uncertain): use -v to list them", indent, possible)
+	}
+}
+
+func (p *printer) vuln(v scan.Vulnerability, indent string) {
+	sev := strings.ToUpper(v.Severity)
+	if sev == "" {
+		sev = "UNRATED"
+	}
+	p.detail("%s%s %s", indent, p.style(severityStyle[v.Severity], "["+sev+"]"), v.Title)
+	parts := []string{p.style(verdictStyle[v.Verdict], v.Verdict)}
+	if len(v.CVE) > 0 {
+		parts = append(parts, strings.Join(v.CVE, ", "))
+	}
+	if v.CVSS > 0 {
+		parts = append(parts, fmt.Sprintf("CVSS %.1f", v.CVSS))
+	}
+	switch {
+	case v.FixedIn != "":
+		parts = append(parts, "fixed in "+v.FixedIn)
+	case v.Unfixed:
+		parts = append(parts, "no fix available")
+	}
+	p.detail("%s  %s", indent, strings.Join(parts, " - "))
+	if v.Note != "" {
+		p.detail("%s  %s", indent, v.Note)
+	}
+	if p.o.Verbose {
+		p.detail("%s  Affected: %s (%s)", indent, strings.Join(v.Affected, ", "), strings.Join(v.Sources, ", "))
+		if v.CWE != "" {
+			p.detail("%s  %s", indent, v.CWE)
+		}
+		for _, ref := range v.References {
+			p.detail("%s  %s", indent, p.style(dim, ref))
+		}
+	} else if len(v.References) > 0 {
+		p.detail("%s  %s", indent, p.style(dim, v.References[0]))
+	}
+}
+
+func countsText(c scan.VulnCounts) string {
+	var parts []string
+	for _, x := range []struct {
+		n    int
+		what string
+	}{{c.Confirmed, "confirmed"}, {c.Likely, "likely"}, {c.Possible, "possible"}} {
+		if x.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", x.n, x.what))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+var sourceNames = map[string]string{
+	"wordfence": "Wordfence", "cve": "CVE List", "wporg": "WordPress.org", "retirejs": "retire.js",
+}
+
+func (p *printer) vulnSummary(r *scan.Result) {
+	p.heading("Vulnerabilities")
+	c := r.VulnerabilityCounts
+	switch {
+	case c.Confirmed+c.Likely > 0:
+		p.bad("%s", countsText(c))
+	case c.Possible > 0:
+		p.info("%s", countsText(c))
+	default:
+		p.good("None matched")
+	}
+	if d := r.VulnerabilityData; d != nil && len(d.Sources) > 0 {
+		var parts []string
+		for _, s := range d.Sources {
+			name := sourceNames[s.Name]
+			if name == "" {
+				name = s.Name
+			}
+			parts = append(parts, fmt.Sprintf("%s (%s)", name, s.UpdatedAt.Format("2006-01-02")))
+		}
+		p.detail("Data: %s", strings.Join(parts, ", "))
+	} else {
+		p.detail("No vulnerability data: run \"cmsrecon update\" to match vulnerabilities")
 	}
 }
 
@@ -265,17 +562,14 @@ func (p *printer) themeDetails(t *scan.Theme, indent string) {
 		}
 		p.detail("%sAuthor: %s", indent, author)
 	}
-	if t.Version != nil && t.Version.Number != "" {
-		p.detail("%sVersion: %s (confidence %d%%)", indent, t.Version.Number, t.Version.Confidence)
-	} else {
-		p.detail("%sVersion: unknown", indent)
-	}
+	p.detail("%sVersion: %s", indent, versionText(t.Version))
 	if p.o.Verbose {
 		p.evidence("Found by", indent, t.Evidence)
 		if t.Version != nil {
 			p.evidence("Version found by", indent, t.Version.Evidence)
 		}
 	}
+	p.vulns(t.Vulnerabilities, indent)
 }
 
 func (p *printer) errors(errs []scan.RequestError) {

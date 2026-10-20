@@ -82,7 +82,8 @@ func TestPassiveModeOnlyFetchesPagesItWouldReadAnyway(t *testing.T) {
 	f := newFakeWP(t).addBaseSite().addExposures()
 	r := runScan(t, options(f.URL(), cli.ModePassive))
 
-	allowed := map[string]bool{"GET /": true, "GET /feed/": true, "GET /comments/feed/": true}
+	// The REST API index is read because the homepage links to it.
+	allowed := map[string]bool{"GET /": true, "GET /feed/": true, "GET /comments/feed/": true, "GET /wp-json/": true}
 	for _, req := range f.requested() {
 		// The 404 page is a random directory under the base URL.
 		if allowed[req] || (strings.HasPrefix(req, "GET /") && strings.Count(req, "/") == 2 && strings.HasSuffix(req, "/") && len(req) == len("GET /0123456789abcdef/")) {

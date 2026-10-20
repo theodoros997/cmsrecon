@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -85,7 +86,7 @@ func (s *Scanner) isNotFound(ctx context.Context, u *url.URL, res *httpclient.Re
 		return true
 	}
 	if res.StatusCode == 200 && s.home != nil && s.home.resp != nil && s.home.resp.StatusCode == 200 {
-		if similarity(tokenize(res.Body, name), tokenize(s.home.resp.Body)) >= similarThreshold {
+		if similarity(tokenize(res.Body, name), tokenize(s.home.resp.Body, name)) >= similarThreshold {
 			return true
 		}
 	}
@@ -107,7 +108,14 @@ func sameAnswer(res *httpclient.Response, name string, b *baseline) bool {
 		bname := strings.TrimSuffix(b.name, "/")
 		return strings.ReplaceAll(la.String(), name, "") == strings.ReplaceAll(lb.String(), bname, "")
 	}
-	return similarity(tokenize(res.Body, name), b.tokens) >= similarThreshold
+	// The requested name is removed from both bodies: removing a short
+	// name such as "x" from one side only would make identical pages
+	// differ. The cached tokens are used when the baseline lacks the name.
+	bt := b.tokens
+	if bytes.Contains(b.resp.Body, []byte(name)) {
+		bt = tokenize(b.resp.Body, strings.TrimSuffix(b.name, "/"), name)
+	}
+	return similarity(tokenize(res.Body, name), bt) >= similarThreshold
 }
 
 // bag is a multiset of page tokens.

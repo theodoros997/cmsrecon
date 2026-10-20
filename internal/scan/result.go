@@ -46,11 +46,19 @@ type Result struct {
 	Status        string    `json:"status"`
 	Stop          *Stop     `json:"stop"`
 
-	WebServer           *WebServer `json:"web_server"`
-	WordPress           *WordPress `json:"wordpress"`
-	InterestingFindings []Finding  `json:"interesting_findings"`
-	Version             *Version   `json:"version"`
-	MainTheme           *Theme     `json:"main_theme"`
+	WebServer           *WebServer      `json:"web_server"`
+	WordPress           *WordPress      `json:"wordpress"`
+	InterestingFindings []Finding       `json:"interesting_findings"`
+	Version             *Version        `json:"version"`
+	CoreVulnerabilities []Vulnerability `json:"core_vulnerabilities"`
+	MainTheme           *Theme          `json:"main_theme"`
+	Themes              []*Theme        `json:"themes"`
+	Plugins             []*Plugin       `json:"plugins"`
+	JSLibraries         []*JSLibrary    `json:"js_libraries"`
+	Users               []*User         `json:"users"`
+
+	VulnerabilityData   *DataInfo  `json:"vulnerability_data"`
+	VulnerabilityCounts VulnCounts `json:"vulnerability_counts"`
 
 	Notices []string       `json:"notices"`
 	Errors  []RequestError `json:"errors"`
@@ -136,6 +144,8 @@ type Finding struct {
 type Version struct {
 	Number     string      `json:"number"`
 	Confidence int         `json:"confidence"`
+	Latest     string      `json:"latest,omitempty"`   // the latest release, from the WordPress.org data
+	Outdated   bool        `json:"outdated,omitempty"` // Number is older than Latest
 	Candidates []Candidate `json:"candidates"`
 	Evidence   []Evidence  `json:"evidence"`
 }
@@ -160,6 +170,87 @@ type Theme struct {
 	Version    *Version   `json:"version"`
 	Parent     *Theme     `json:"parent,omitempty"`
 	Evidence   []Evidence `json:"evidence"`
+
+	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
+}
+
+// Plugin is a detected plugin.
+type Plugin struct {
+	Slug       string     `json:"slug"`
+	Name       string     `json:"name,omitempty"` // from its readme
+	Location   string     `json:"location"`
+	ReadmeURL  string     `json:"readme_url,omitempty"`
+	Confidence int        `json:"confidence"`
+	Version    *Version   `json:"version"`
+	Evidence   []Evidence `json:"evidence"`
+
+	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
+}
+
+// JSLibrary is a JavaScript library the scanned pages load.
+type JSLibrary struct {
+	Name    string   `json:"name"`
+	Version *Version `json:"version"`
+	URLs    []string `json:"urls"` // where it was seen, at most five
+
+	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
+}
+
+// User is a WordPress account found on the site. Username is the login
+// slug (user_nicename), which is usually the login name; it is empty when
+// only a display name was seen.
+type User struct {
+	ID          int        `json:"id,omitempty"`
+	Username    string     `json:"username,omitempty"`
+	DisplayName string     `json:"display_name,omitempty"`
+	Confidence  int        `json:"confidence"`
+	Evidence    []Evidence `json:"evidence"`
+}
+
+// Vulnerability verdicts, strongest first.
+const (
+	VerdictConfirmed = "confirmed" // the detected version is affected
+	VerdictLikely    = "likely"    // affected, but the version is less certain or the sources disagree
+	VerdictPossible  = "possible"  // the version is unknown, or only a secondary source says it is affected
+)
+
+// Vulnerability is a known vulnerability that applies, or may apply, to a
+// detected component.
+type Vulnerability struct {
+	Title      string   `json:"title"`
+	Verdict    string   `json:"verdict"`
+	Severity   string   `json:"severity,omitempty"` // critical, high, medium or low; omitted when unknown
+	CVSS       float64  `json:"cvss,omitempty"`
+	CVSSVector string   `json:"cvss_vector,omitempty"`
+	CVE        []string `json:"cve"`
+	CWE        string   `json:"cwe,omitempty"`
+	Affected   []string `json:"affected_versions"`
+	FixedIn    string   `json:"fixed_in,omitempty"`
+	Unfixed    bool     `json:"unfixed,omitempty"` // no fixed version exists
+	Published  string   `json:"published,omitempty"`
+	Sources    []string `json:"sources"`        // wordfence, cve or retirejs
+	Note       string   `json:"note,omitempty"` // why the verdict is not confirmed, e.g. the sources disagree
+	References []string `json:"references"`
+}
+
+// DataInfo describes the vulnerability data a scan used.
+type DataInfo struct {
+	Directory string       `json:"directory"`
+	Sources   []DataSource `json:"sources"`
+}
+
+// DataSource is one source of data "cmsrecon update" downloaded.
+type DataSource struct {
+	Name      string    `json:"name"` // wordfence, cve, wporg or retirejs
+	UpdatedAt time.Time `json:"updated_at"`
+	Entries   int       `json:"entries,omitempty"`
+}
+
+// VulnCounts counts the vulnerabilities of every component by verdict.
+type VulnCounts struct {
+	Confirmed int `json:"confirmed"`
+	Likely    int `json:"likely"`
+	Possible  int `json:"possible"`
 }
 
 // RequestError is a request that failed during the checks. Failed requests
@@ -191,12 +282,50 @@ func (r *Result) normalize() {
 		r.WordPress.Evidence = nonNil(r.WordPress.Evidence)
 	}
 	r.Version.normalize()
+	r.CoreVulnerabilities = normalizeVulns(r.CoreVulnerabilities)
 	for t := r.MainTheme; t != nil; t = t.Parent {
-		t.Evidence = nonNil(t.Evidence)
-		t.Version.normalize()
+		t.normalize()
+	}
+	r.Themes = nonNil(r.Themes)
+	for _, t := range r.Themes {
+		t.normalize()
+	}
+	r.Plugins = nonNil(r.Plugins)
+	for _, p := range r.Plugins {
+		p.Evidence = nonNil(p.Evidence)
+		p.Version.normalize()
+		p.Vulnerabilities = normalizeVulns(p.Vulnerabilities)
+	}
+	r.JSLibraries = nonNil(r.JSLibraries)
+	for _, l := range r.JSLibraries {
+		l.URLs = nonNil(l.URLs)
+		l.Version.normalize()
+		l.Vulnerabilities = normalizeVulns(l.Vulnerabilities)
+	}
+	r.Users = nonNil(r.Users)
+	for _, u := range r.Users {
+		u.Evidence = nonNil(u.Evidence)
+	}
+	if r.VulnerabilityData != nil {
+		r.VulnerabilityData.Sources = nonNil(r.VulnerabilityData.Sources)
 	}
 	r.Notices = nonNil(r.Notices)
 	r.Errors = nonNil(r.Errors)
+}
+
+func (t *Theme) normalize() {
+	t.Evidence = nonNil(t.Evidence)
+	t.Version.normalize()
+	t.Vulnerabilities = normalizeVulns(t.Vulnerabilities)
+}
+
+func normalizeVulns(vs []Vulnerability) []Vulnerability {
+	vs = nonNil(vs)
+	for i := range vs {
+		vs[i].CVE, vs[i].Affected = nonNil(vs[i].CVE), nonNil(vs[i].Affected)
+		vs[i].Sources, vs[i].References = nonNil(vs[i].Sources), nonNil(vs[i].References)
+	}
+	return vs
 }
 
 func (v *Version) normalize() {

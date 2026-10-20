@@ -10,11 +10,13 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/theodoros997/cmsrecon/internal/buildinfo"
 	"github.com/theodoros997/cmsrecon/internal/cli"
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
+	"github.com/theodoros997/cmsrecon/internal/wordlists"
 )
 
 // Modes recorded in evidence.
@@ -25,9 +27,14 @@ const (
 
 // Scanner scans one target. Create it with New and call Run once.
 type Scanner struct {
+	// Progress, when set, is called as brute-force runs advance, e.g.
+	// ("Plugins", 1200, 4000). It is called from several goroutines.
+	Progress func(label string, done, total int)
+
 	opts   *cli.ScanOptions
 	client *httpclient.Client
 	base   *url.URL // the scanned URL, updated by followed redirects
+	data   *scanData
 
 	home     *page
 	notFound *page    // the answer to a random path: the site's 404 page
@@ -39,6 +46,13 @@ type Scanner struct {
 
 	baseMu    sync.Mutex
 	baselines map[string]*baseline
+
+	headRefused atomic.Bool // the server answers HEAD with 405 or 501
+
+	restOnce sync.Once
+	restAPI  *restAPI
+	invOnce  sync.Once
+	inv      *inventory
 
 	mu  sync.Mutex // guards res
 	res *Result
@@ -83,6 +97,7 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 		s.res.Notices = append(s.res.Notices, "Aggressive mode skips the passive checks: interesting headers, versions from the homepage and its feeds, and the main theme.")
 	}
 
+	s.loadData()
 	if s.preflight(ctx) {
 		s.runChecks(ctx)
 		s.res.Status = StatusCompleted
@@ -103,7 +118,8 @@ func (s *Scanner) runChecks(ctx context.Context) {
 		s.checkFullPathDisclosure, s.checkBackupDB, s.checkDuplicatorLog, s.checkMultisite,
 		s.checkMuPlugins, s.checkRegistration, s.checkUploadListing, s.checkTmmDBMigrate,
 		s.checkSQLDump, s.checkEmergencyScript, s.checkWPCron, s.checkPHPDisabled,
-		s.checkFantastico, s.checkSearchReplaceDB,
+		s.checkFantastico, s.checkSearchReplaceDB, s.checkConfigBackups, s.checkDBExports,
+		s.checkBackupFolders,
 	}
 	var wg sync.WaitGroup
 	for _, check := range checks {
@@ -115,16 +131,47 @@ func (s *Scanner) runChecks(ctx context.Context) {
 			}
 		})
 	}
-	// The theme's ?ver= signal needs the core version, so the theme comes
-	// second.
+	// The ?ver= signals of themes and plugins need the core version, and
+	// theme enumeration needs the main theme, so they come after.
 	wg.Go(func() {
 		v := s.detectVersion(ctx)
-		t := s.detectMainTheme(ctx, v)
+		latest(v, s.data.lists.CoreLatest)
+		var main *Theme
+		var others []*Theme
+		var plugins []*Plugin
+		inv := s.restInventory(ctx)
+		if inv != nil && len(inv.themes) > 0 {
+			main, others = s.themesFromInventory(inv)
+		} else {
+			main = s.detectMainTheme(ctx, v)
+			for t := main; t != nil; t = t.Parent {
+				latest(t.Version, s.data.lists.Latest(wordlists.Themes, t.Slug))
+			}
+		}
+		var inner sync.WaitGroup
+		inner.Go(func() { plugins = s.detectPlugins(ctx, v) })
+		if inv == nil || len(inv.themes) == 0 {
+			inner.Go(func() { others = s.enumerateThemes(ctx, v, main) })
+		}
+		inner.Wait()
 		s.mu.Lock()
-		s.res.Version, s.res.MainTheme = v, t
+		s.res.Version, s.res.MainTheme, s.res.Themes, s.res.Plugins = v, main, others, plugins
+		s.mu.Unlock()
+	})
+	wg.Go(func() {
+		users := s.enumerateUsers(ctx)
+		s.mu.Lock()
+		s.res.Users = users
+		s.mu.Unlock()
+	})
+	wg.Go(func() {
+		libs := s.detectJSLibraries(ctx)
+		s.mu.Lock()
+		s.res.JSLibraries = libs
 		s.mu.Unlock()
 	})
 	wg.Wait()
+	s.matchVulnerabilities()
 }
 
 func (s *Scanner) finish(start time.Time) {

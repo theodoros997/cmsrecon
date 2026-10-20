@@ -43,7 +43,7 @@ var findingOrder = []string{
 	idUnfinishedInstall, idHeaders, idRobots, idXMLRPC, idReadme, idDebugLog, idFullPath,
 	idBackupDB, idDuplicatorLog, idMultisite, idMuPlugins, idRegistration, idUploadListing,
 	idTmmDBMigrate, idUploadSQLDump, idEmergencyScript, idWPCron, idPHPDisabled, idFantastico,
-	idSearchReplaceDB,
+	idSearchReplaceDB, idConfigBackup, idDBExport, idBackupFolder,
 }
 
 func findingRank(id string) int {

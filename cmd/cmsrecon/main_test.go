@@ -25,14 +25,16 @@ func TestRun(t *testing.T) {
 		{"help", []string{"--help"}, exitOK, []string{"Usage:"}},
 		{"scan help", []string{"scan", "-h"}, exitOK, []string{"--enumerate", "Exit codes:"}},
 		{"wpscan style dry run", []string{"-u", "example.com", "--dry-run"}, exitOK,
-			[]string{"http://example.com/", "vulnerable", "author IDs 1-10", "Not implemented yet"}},
+			[]string{"http://example.com/", "vulnerable", "author IDs 1-10", "Data:"}},
 		{"positional url before flags", []string{"scan", "https://example.com/blog", "-e", "ap,u1-3", "--dry-run"}, exitOK,
 			[]string{"https://example.com/blog/", "Plugins:", "all", "author IDs 1-3"}},
 		{"rest inventory replaces enumeration", []string{"-u", "example.com", "--wp-auth", "admin:abcd efgh", "--dry-run"}, exitOK,
-			[]string{"REST API inventory as admin", "REST API inventory (--wp-auth)"}},
+			[]string{"REST API inventory as admin"}},
 		{"nothing to enumerate", []string{"-u", "example.com", "-e", "none", "--dry-run"}, exitOK, nil},
 		{"conflicting enumeration", []string{"-u", "example.com", "-e", "vp,ap", "--dry-run"}, exitUsage, nil},
 		{"missing url", []string{"scan", "--dry-run"}, exitUsage, nil},
+		{"update help", []string{"update", "-h"}, exitOK, []string{"cmsrecon update [options]", "retirejs"}},
+		{"update unknown source", []string{"update", "--sources", "nvd"}, exitUsage, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -68,12 +70,12 @@ func fakeSite(t *testing.T) *httptest.Server {
 func TestScanCLI(t *testing.T) {
 	srv := fakeSite(t)
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-u", srv.URL, "--detection-mode", "passive", "-v"}, &stdout, &stderr)
+	code := run([]string{"-u", srv.URL, "--detection-mode", "passive", "-v", "--data-dir", t.TempDir()}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit code = %d\nstdout:\n%s\nstderr:\n%s", code, &stdout, &stderr)
 	}
 	out := stdout.String()
-	for _, want := range []string{"WordPress detected", "XML-RPC seems to be enabled", "6.4.2", "twentytwentyfour", "Found by:", "Not implemented yet", "requests"} {
+	for _, want := range []string{"WordPress detected", "XML-RPC seems to be enabled", "6.4.2", "twentytwentyfour", "Found by:", "No vulnerability data", "Plugins (0)", "requests"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("CLI report missing %q:\n%s", want, out)
 		}
@@ -90,14 +92,14 @@ func TestScanJSONToFile(t *testing.T) {
 	srv := fakeSite(t)
 	out := filepath.Join(t.TempDir(), "report.json")
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"scan", srv.URL, "-f", "json", "-o", out, "--detection-mode", "passive"}, &stdout, &stderr)
+	code := run([]string{"scan", srv.URL, "-f", "json", "-o", out, "--detection-mode", "passive", "--data-dir", t.TempDir()}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit code = %d\nstderr:\n%s", code, &stderr)
 	}
 	if stdout.Len() > 0 {
 		t.Errorf("stdout should be empty with -o, got %q", &stdout)
 	}
-	if !strings.Contains(stderr.String(), "notice: Not implemented yet") || !strings.Contains(stderr.String(), "Report written to") {
+	if !strings.Contains(stderr.String(), "notice: No vulnerability data") || !strings.Contains(stderr.String(), "Report written to") {
 		t.Errorf("stderr = %q", &stderr)
 	}
 	data, err := os.ReadFile(out)
@@ -125,7 +127,7 @@ func TestScanStoppedExitCode(t *testing.T) {
 	}))
 	defer srv.Close()
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"-u", srv.URL, "-e", "none"}, &stdout, &stderr); code != exitStopped {
+	if code := run([]string{"-u", srv.URL, "-e", "none", "--data-dir", t.TempDir()}, &stdout, &stderr); code != exitStopped {
 		t.Fatalf("exit code = %d, want %d\n%s", code, exitStopped, &stdout)
 	}
 	if !strings.Contains(stdout.String(), "Scan stopped") || !strings.Contains(stdout.String(), "--force") {
