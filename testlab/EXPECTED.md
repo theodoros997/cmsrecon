@@ -27,7 +27,7 @@ What a correct scan of the lab reports, and what it must not report. `check-lab.
 | Must-use plugins folder (403, no listing) | `/wp-content/mu-plugins/` |
 | Open registration | `/wp-login.php?action=register` |
 | Uploads directory listing | `/wp-content/uploads/` |
-| TMM DB Migrate export | `/wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip` |
+| TMM DB Migrate export (an empty 22-byte zip, so "empty archive" is the accurate report) | `/wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip` |
 | SQL dump in uploads | `/wp-content/uploads/dump.sql` |
 | Emergency password reset script | `/emergency.php` (harmless placeholder) |
 | WP-Cron reachable | `/wp-cron.php` |

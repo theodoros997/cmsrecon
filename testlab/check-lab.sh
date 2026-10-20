@@ -66,6 +66,8 @@ expect "Duplicator installer log" /installer-log.txt 200 DUPLICATOR
 expect "Open registration" '/wp-login.php?action=register' 200 'name="user_login"'
 expect "Uploads directory listing" /wp-content/uploads/ 200 'Index of'
 expect "TMM DB Migrate export" /wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip 200
+size=$(curl -s -o /dev/null -w '%{size_download}' "$B/wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip")
+report "$([[ $size == 22 ]] && echo yes || echo no)" "TMM export is a valid empty zip (22 bytes)" "got $size bytes"
 expect "SQL dump in uploads" /wp-content/uploads/dump.sql 200 'CREATE TABLE'
 expect "emergency.php" /emergency.php 200 password
 expect "wp-cron.php reachable" /wp-cron.php 200

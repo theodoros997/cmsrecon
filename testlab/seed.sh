@@ -66,9 +66,8 @@ printf '%s\n' "$sql" > wp-content/uploads/dump.sql
 printf '%s\n' "$sql" > wp-content/backup-db/wordpress_lab.sql
 printf '%s\n' "$sql" > wp-content/updraft/backup_lab-db.sql
 
-# 22-byte empty zip (end-of-central-directory record only).
-printf 'PK\005\006\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' \
-  > wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip
+# Empty zip: a 22-byte end-of-central-directory record (signature + 18 zero bytes).
+{ printf 'PK\005\006'; head -c 18 /dev/zero; } > wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip
 
 printf 'DUPLICATOR-LITE INSTALL-LOG\nSTEP-1 START @ 08:00:00\n' > installer-log.txt
 printf 'wp-config.php\nwp-login.php\n' > fantastico_fileslist.txt
