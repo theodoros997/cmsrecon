@@ -2,7 +2,7 @@
 
 WordPress reconnaissance for authorized security assessments. cmsrecon runs the same kind of checks as WPScan, with vulnerability matching that needs no paid API subscription.
 
-> **Status: early development.** The command line parses and validates every option, and `--dry-run` prints the scan plan. The scan engine is being built; see the [roadmap](#roadmap).
+> **Status: early development.** `cmsrecon scan` runs the pre-flight checks, the interesting findings, WordPress core version detection and main theme detection, and writes a CLI or JSON report. Plugin, theme and user enumeration, backup searches and vulnerability matching are not built yet; a scan says which of the requested ones it skipped. See the [roadmap](#roadmap).
 
 ## Why
 
@@ -27,12 +27,28 @@ go build -o cmsrecon ./cmd/cmsrecon
 ## Usage
 
 ```bash
+cmsrecon -u https://example.com
+cmsrecon scan https://example.com -v --proxy http://127.0.0.1:8080
+cmsrecon scan https://example.com --detection-mode passive -f json -o report.json
 cmsrecon -u https://example.com --dry-run
-cmsrecon scan https://example.com -e ap,at,u1-20 --proxy http://127.0.0.1:8080
 cmsrecon scan -h
 ```
 
 `-e` takes the same choices as WPScan's `--enumerate`: `vp`/`p`/`ap` (vulnerable, popular or all plugins), `vt`/`t`/`at` (themes), `cb` (config backups), `dbe` (database exports), `bf` (backup folders) and `u[RANGE]` (users). The default is `vp,vt,cb,dbe,bf,u`.
+
+`--detection-mode` works as in WPScan: `passive` only reads pages the scan fetches anyway, `aggressive` only runs the checks that request specific paths, and `mixed` (the default) runs both. `-v` shows how each finding was detected and how confident cmsrecon is. The JSON format is documented in [docs/json-report.md](docs/json-report.md).
+
+The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in the target's logs; `--random-user-agent` or `--user-agent` changes it. Only an explicit `--proxy` is used: `HTTP_PROXY` and similar variables are ignored.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | The scan completed |
+| 1 | cmsrecon failed, e.g. the report file could not be written |
+| 2 | Invalid command line |
+| 3 | A pre-flight check stopped the scan: unreachable, authentication required, 403, a redirect that needs `--follow-redirect`, not WordPress, hosted on WordPress.com, or an unfinished install. The report says why |
+| 130 | Interrupted with Ctrl-C; the partial report is still written |
 
 ## What it checks
 
@@ -62,16 +78,18 @@ Data from each source remains subject to that provider's terms.
 **v1**
 
 - [x] Command-line options and scan plan (`--dry-run`)
-- [ ] HTTP client: proxy, authentication, headers, throttling, scope
-- [ ] Pre-flight checks
-- [ ] Interesting findings
-- [ ] WordPress core version, including a hash database built from official releases
+- [x] HTTP client: proxy, authentication, headers, throttling, scope
+- [x] Pre-flight checks
+- [x] Interesting findings
+- [x] WordPress core version from feeds, meta tags, asset versions and readme
+- [ ] WordPress core version from file hashes (hash database built from official releases)
+- [x] Main theme and its version
 - [ ] Theme and plugin discovery with version evidence
 - [ ] User enumeration
 - [ ] Config backups, database exports, backup folders
 - [ ] REST API inventory (`--wp-auth`)
 - [ ] Vulnerability database (`cmsrecon update`) and matching
-- [ ] CLI and JSON reports
+- [x] CLI and JSON reports
 
 **v1.1:** plugin and theme hash fingerprinting, JavaScript library detection, SARIF and HTML reports, media and timthumb enumeration.
 
