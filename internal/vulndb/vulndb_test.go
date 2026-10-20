@@ -406,6 +406,23 @@ func TestMergeAndMatch(t *testing.T) {
 		t.Errorf("core 5.6 = %v, note %q", ms, ms[0].Note)
 	}
 
+	// With an unknown version, a vulnerability that reaches the latest
+	// release, or has no fix, affects whatever version is installed.
+	theme := db.Match(KindTheme, "some-theme", Detected{Latest: "2.0"})
+	if len(theme) != 1 || theme[0].Verdict != VerdictLikely || !strings.Contains(theme[0].Note, "up to the latest (2.0)") {
+		t.Errorf("unfixed theme vulnerability, version unknown = %v (%q)", theme, theme[0].Note)
+	}
+	if ms := db.Match(KindTheme, "some-theme", Detected{Latest: "2.1"}); ms[0].Verdict != VerdictPossible {
+		t.Errorf("fixed in a release after 2.0: %v", ms)
+	}
+	if ms := db.Match(KindPlugin, "contact-form-7", Detected{Latest: "6.1"}); ms[0].Verdict != VerdictPossible {
+		t.Errorf("an old vulnerability with an unknown version stays possible: %v", ms)
+	}
+	open := MatchAdvisories([]*Advisory{{Title: "x", Sources: []SourceRanges{{Source: SourceWordfence, Affected: []Range{{}}}}}}, Detected{})
+	if open[0].Verdict != VerdictLikely || !strings.Contains(open[0].Note, "every version is affected") {
+		t.Errorf("all versions = %v", open)
+	}
+
 	// A CVE only in the CVE List is its own advisory.
 	if advs := db.Advisories(KindPlugin, "backup-backup"); len(advs) != 1 || advs[0].Sources[0].Source != SourceCVE {
 		t.Errorf("backup-backup = %+v", advs)

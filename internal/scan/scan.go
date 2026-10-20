@@ -39,6 +39,8 @@ type Scanner struct {
 	home     *page
 	notFound *page    // the answer to a random path: the site's 404 page
 	content  *url.URL // the wp-content directory on the target host
+	plugins  *url.URL // the plugins directory: <content>/plugins/ or --wp-plugins-dir
+	themes   *url.URL // the themes directory: <content>/themes/
 	server   string   // web server family
 
 	cacheMu sync.Mutex
@@ -173,6 +175,7 @@ func (s *Scanner) runChecks(ctx context.Context) {
 		s.mu.Unlock()
 	})
 	wg.Wait()
+	s.checkItems(ctx)
 	s.matchVulnerabilities()
 }
 
@@ -251,6 +254,11 @@ func (s *Scanner) urlWithQuery(ref, rawQuery string) string {
 // contentURL resolves ref against the wp-content directory.
 func (s *Scanner) contentURL(ref string) string {
 	return s.content.ResolveReference(&url.URL{Path: ref}).String()
+}
+
+// under resolves ref against a directory such as s.plugins.
+func under(dir *url.URL, ref string) string {
+	return dir.ResolveReference(&url.URL{Path: ref}).String()
 }
 
 // pages returns the homepage and the 404 page with a label for evidence.

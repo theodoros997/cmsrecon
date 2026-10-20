@@ -32,7 +32,15 @@ func (s *Scanner) preflight(ctx context.Context) bool {
 	}
 
 	content, contentFound := s.detectContentDir()
+	if s.opts.ContentDir != "" {
+		content, contentFound = s.dirOption(s.opts.ContentDir), true
+	}
 	s.content = content
+	s.plugins = s.content.ResolveReference(&url.URL{Path: "plugins/"})
+	if s.opts.PluginsDir != "" {
+		s.plugins = s.dirOption(s.opts.PluginsDir)
+	}
+	s.themes = s.content.ResolveReference(&url.URL{Path: "themes/"})
 
 	if s.wordPressCom(contentFound) {
 		s.stop(StopWordPressCom, "The site is hosted on WordPress.com.",
@@ -50,6 +58,22 @@ func (s *Scanner) preflight(ctx context.Context) bool {
 		return false
 	}
 	return true
+}
+
+// dirOption resolves --wp-content-dir or --wp-plugins-dir, a path
+// relative to the scanned URL or an absolute URL, to a directory URL. A
+// host outside the scope joins it: the user named it.
+func (s *Scanner) dirOption(v string) *url.URL {
+	u, err := s.base.Parse(strings.TrimSpace(v))
+	if err != nil {
+		u = s.base.ResolveReference(&url.URL{Path: v})
+	}
+	u.RawQuery, u.Fragment = "", ""
+	if !strings.HasSuffix(u.Path, "/") {
+		u.Path += "/"
+	}
+	s.client.AddScope(u.Hostname())
+	return u
 }
 
 func (s *Scanner) stop(code, msg, hint string) {

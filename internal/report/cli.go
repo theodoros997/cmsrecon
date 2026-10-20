@@ -243,7 +243,7 @@ func (p *printer) version(v *scan.Version, vulns []scan.Vulnerability) {
 	if l := latestText(v); l != "" {
 		p.detail("%s", l)
 	}
-	p.vulns(vulns, "")
+	p.vulns(vulns, nil, nil, "")
 	if p.o.Verbose {
 		if len(v.Candidates) > 1 {
 			var others []string
@@ -306,6 +306,7 @@ func (p *printer) plugins(ps []*scan.Plugin) {
 			p.detail("Name: %s", pl.Name)
 		}
 		p.detail("Version: %s", versionText(pl.Version))
+		p.itemNotes(pl.LastUpdated, pl.Warnings, "")
 		if p.o.Verbose {
 			if pl.ReadmeURL != "" {
 				p.detail("Readme: %s", pl.ReadmeURL)
@@ -315,7 +316,7 @@ func (p *printer) plugins(ps []*scan.Plugin) {
 				p.evidence("Version found by", "", pl.Version.Evidence)
 			}
 		}
-		p.vulns(pl.Vulnerabilities, "")
+		p.vulns(pl.Vulnerabilities, pl.Possible, pl.Version, "")
 	}
 }
 
@@ -354,7 +355,7 @@ func (p *printer) jsLibraries(libs []*scan.JSLibrary) {
 		if p.o.Verbose && l.Version != nil {
 			p.evidence("Version found by", "", l.Version.Evidence)
 		}
-		p.vulns(l.Vulnerabilities, "")
+		p.vulns(l.Vulnerabilities, nil, nil, "")
 	}
 }
 
@@ -437,14 +438,13 @@ var verdictStyle = map[string]string{
 	scan.VerdictPossible:  dim,
 }
 
-// vulns lists the vulnerabilities of a component. Possible ones (unknown
-// or uncertain version) are counted, and only listed with -v.
-func (p *printer) vulns(vs []scan.Vulnerability, indent string) {
-	if len(vs) == 0 {
+// vulns lists the vulnerabilities of a component. The possible ones are
+// summed up in one line, unless the scan listed them (--possible).
+func (p *printer) vulns(vs []scan.Vulnerability, possible *scan.PossibleVulns, v *scan.Version, indent string) {
+	if len(vs) == 0 && possible == nil {
 		return
 	}
 	var c scan.VulnCounts
-	var possible int
 	for _, v := range vs {
 		switch v.Verdict {
 		case scan.VerdictConfirmed:
@@ -455,17 +455,52 @@ func (p *printer) vulns(vs []scan.Vulnerability, indent string) {
 			c.Possible++
 		}
 	}
-	p.detail("%s%s: %s", indent, p.style(bold, "Vulnerabilities"), countsText(c))
-	for _, v := range vs {
-		if v.Verdict == scan.VerdictPossible && !p.o.Verbose {
-			possible++
-			continue
+	if len(vs) > 0 {
+		p.detail("%s%s: %s", indent, p.style(bold, "Vulnerabilities"), countsText(c))
+		for _, v := range vs {
+			p.vuln(v, indent+"  ")
 		}
-		p.vuln(v, indent+"  ")
 	}
-	if possible > 0 {
-		p.detail("%s  %d possible (the version is unknown or uncertain): use -v to list them", indent, possible)
+	if possible != nil && !possible.Listed {
+		p.detail("%s%s", indent, possibleText(possible, v))
 	}
+}
+
+// possibleText sums up, in one line, the vulnerabilities that only may
+// apply: the version is unknown, or only a secondary source puts it in the
+// affected range.
+func possibleText(ps *scan.PossibleVulns, v *scan.Version) string {
+	s := fmt.Sprintf("Possible vulnerabilities: %d", ps.Count)
+	if sev := severityCounts(ps); sev != "" {
+		s += " (" + sev + ")"
+	}
+	them := "them"
+	if ps.Count == 1 {
+		them = "it"
+	}
+	if ps.FixedIn != "" {
+		all := "all fixed"
+		if ps.Count == 1 {
+			all = "fixed"
+		}
+		s += fmt.Sprintf(", %s in %s", all, ps.FixedIn)
+	}
+	why := "the version is unknown"
+	if v != nil && v.Number != "" {
+		why = "only a secondary source says " + v.Number + " is affected"
+	}
+	return s + " (not listed: " + why + "; --possible lists " + them + ")"
+}
+
+func severityCounts(ps *scan.PossibleVulns) string {
+	var parts []string
+	if ps.Critical > 0 {
+		parts = append(parts, fmt.Sprintf("%d critical", ps.Critical))
+	}
+	if ps.High > 0 {
+		parts = append(parts, fmt.Sprintf("%d high", ps.High))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *printer) vuln(v scan.Vulnerability, indent string) {
@@ -524,14 +559,39 @@ var sourceNames = map[string]string{
 	"wordfence": "Wordfence", "cve": "CVE List", "wporg": "WordPress.org", "retirejs": "retire.js",
 }
 
+// listedPossible reports whether the scan listed the possible
+// vulnerabilities (--possible).
+func listedPossible(r *scan.Result) bool {
+	for _, pl := range r.Plugins {
+		if pl.Possible != nil {
+			return pl.Possible.Listed
+		}
+	}
+	for t := r.MainTheme; t != nil; t = t.Parent {
+		if t.Possible != nil {
+			return t.Possible.Listed
+		}
+	}
+	for _, t := range r.Themes {
+		if t.Possible != nil {
+			return t.Possible.Listed
+		}
+	}
+	return false
+}
+
 func (p *printer) vulnSummary(r *scan.Result) {
 	p.heading("Vulnerabilities")
 	c := r.VulnerabilityCounts
+	text := countsText(c)
+	if c.Possible > 0 && !listedPossible(r) {
+		text += " (the possible ones are counted, not listed: --possible lists them)"
+	}
 	switch {
 	case c.Confirmed+c.Likely > 0:
-		p.bad("%s", countsText(c))
+		p.bad("%s", text)
 	case c.Possible > 0:
-		p.info("%s", countsText(c))
+		p.info("%s", text)
 	default:
 		p.good("None matched")
 	}
@@ -550,6 +610,17 @@ func (p *printer) vulnSummary(r *scan.Result) {
 	}
 }
 
+// itemNotes prints when WordPress.org last saw an update of a plugin or
+// theme, and what its folder exposes.
+func (p *printer) itemNotes(updated string, warnings []string, indent string) {
+	if updated != "" {
+		p.detail("%sLast updated: %s (on WordPress.org)", indent, updated)
+	}
+	for _, w := range warnings {
+		p.detail("%s%s %s", indent, p.style(yellow, "[!]"), w)
+	}
+}
+
 func (p *printer) themeDetails(t *scan.Theme, indent string) {
 	p.detail("%sLocation: %s", indent, t.Location)
 	if t.Name != "" {
@@ -563,13 +634,14 @@ func (p *printer) themeDetails(t *scan.Theme, indent string) {
 		p.detail("%sAuthor: %s", indent, author)
 	}
 	p.detail("%sVersion: %s", indent, versionText(t.Version))
+	p.itemNotes(t.LastUpdated, t.Warnings, indent)
 	if p.o.Verbose {
 		p.evidence("Found by", indent, t.Evidence)
 		if t.Version != nil {
 			p.evidence("Version found by", indent, t.Version.Evidence)
 		}
 	}
-	p.vulns(t.Vulnerabilities, indent)
+	p.vulns(t.Vulnerabilities, t.Possible, t.Version, indent)
 }
 
 func (p *printer) errors(errs []scan.RequestError) {

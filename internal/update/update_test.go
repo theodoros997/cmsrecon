@@ -79,7 +79,7 @@ func newUpstream(t *testing.T) *upstream {
 		page, _ := strconv.Atoi(r.URL.Query().Get("request[page]"))
 		fmt.Fprintf(w, `{"info": {"page": %d, "pages": 2, "results": 3}, "plugins": [`, page)
 		if page == 1 {
-			fmt.Fprint(w, `{"slug": "akismet", "name": "Akismet", "version": "5.3", "active_installs": 5000000}, {"slug": "contact-form-7", "name": "Contact Form 7", "version": "6.1"}`)
+			fmt.Fprint(w, `{"slug": "akismet", "name": "Akismet", "version": "5.3", "active_installs": 5000000, "last_updated": "2026-09-30 3:04pm GMT"}, {"slug": "contact-form-7", "name": "Contact Form 7", "version": "6.1"}`)
 		} else {
 			fmt.Fprint(w, `{"slug": "duplicator", "version": "1.5.7"}`)
 		}
@@ -164,6 +164,9 @@ func TestRunDownloadsEverySource(t *testing.T) {
 	}
 	if lists.PopularPlugins[0] != "akismet" || lists.Latest(wordlists.Plugins, "duplicator") != "1.5.7" || lists.Latest(wordlists.Themes, "astra") != "4.8.3" {
 		t.Errorf("popular = %v, duplicator latest %q", lists.PopularPlugins[:3], lists.Latest(wordlists.Plugins, "duplicator"))
+	}
+	if lists.LastUpdated(wordlists.Plugins, "akismet") != "2026-09-30" || lists.LastUpdated(wordlists.Plugins, "contact-form-7") != "" {
+		t.Errorf("last updated = %q", lists.LastUpdated(wordlists.Plugins, "akismet"))
 	}
 	if lists.CoreLatest != "6.6.2" {
 		t.Errorf("core latest = %q", lists.CoreLatest)

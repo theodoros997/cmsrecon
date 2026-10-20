@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -48,7 +49,11 @@ type ScanOptions struct {
 	// aggressive only brute-forces.
 	PluginsDetection DetectionMode
 	ThemesDetection  DetectionMode
-	CrawlPages       int // extra pages read to discover plugins and themes
+	CrawlPages       int      // extra pages read to discover plugins and themes
+	PluginsList      []string // --plugins-list: exactly these plugins are checked
+	ThemesList       []string // --themes-list
+	ContentDir       string   // --wp-content-dir, when detection gets it wrong
+	PluginsDir       string   // --wp-plugins-dir
 	Force            bool
 	FollowRedirect   bool
 	Scope            []string
@@ -65,11 +70,12 @@ type ScanOptions struct {
 	Timeout         time.Duration
 	Insecure        bool
 
-	Format  Format
-	Output  string
-	NoColor bool
-	Verbose bool
-	DryRun  bool
+	Format       Format
+	Output       string
+	NoColor      bool
+	Verbose      bool
+	ShowPossible bool // list the possible vulnerabilities instead of counting them
+	DryRun       bool
 
 	DataDir string
 }
@@ -80,6 +86,8 @@ type ScanOptions struct {
 func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	o := &ScanOptions{}
 	var target, enumerate, mode, pluginsMode, themesMode, format, scope, proxy, httpAuth, wpAuth string
+	var pluginsList, themesList string
+	var stealthy bool
 	headers := headerFlag{}
 
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
@@ -99,6 +107,11 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.StringVar(&pluginsMode, "plugins-detection", string(ModePassive), "")
 	fs.StringVar(&themesMode, "themes-detection", string(ModePassive), "")
 	fs.IntVar(&o.CrawlPages, "crawl", DefaultCrawlPages, "")
+	fs.StringVar(&pluginsList, "plugins-list", "", "")
+	fs.StringVar(&themesList, "themes-list", "", "")
+	fs.StringVar(&o.ContentDir, "wp-content-dir", "", "")
+	fs.StringVar(&o.PluginsDir, "wp-plugins-dir", "", "")
+	fs.BoolVar(&stealthy, "stealthy", false, "")
 
 	fs.StringVar(&o.UserAgent, "user-agent", "", "")
 	fs.BoolVar(&o.RandomUserAgent, "random-user-agent", false, "")
@@ -120,6 +133,7 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.BoolVar(&o.NoColor, "no-color", false, "")
 	fs.BoolVar(&o.Verbose, "v", false, "")
 	fs.BoolVar(&o.Verbose, "verbose", false, "")
+	fs.BoolVar(&o.ShowPossible, "possible", false, "")
 	fs.BoolVar(&o.DryRun, "dry-run", false, "")
 
 	fs.StringVar(&o.DataDir, "data-dir", "", "")
@@ -166,6 +180,18 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	}
 	if o.CrawlPages < 0 || o.CrawlPages > MaxCrawlPages {
 		return nil, fmt.Errorf("--crawl must be between 0 and %d", MaxCrawlPages)
+	}
+	if o.PluginsList, err = parseSlugList("plugins-list", pluginsList); err != nil {
+		return nil, err
+	}
+	if o.ThemesList, err = parseSlugList("themes-list", themesList); err != nil {
+		return nil, err
+	}
+	// --stealthy, as in WPScan: a browser User-Agent and only the pages a
+	// visitor's browser would load.
+	if stealthy {
+		o.RandomUserAgent = true
+		o.DetectionMode = ModePassive
 	}
 	if o.Format, err = parseFormat(format); err != nil {
 		return nil, err
@@ -238,6 +264,40 @@ func normalizeTarget(raw string) (*url.URL, error) {
 		}
 	}
 	return u, nil
+}
+
+var slugListRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+// parseSlugList reads --plugins-list or --themes-list: slugs separated by
+// commas, or the name of a file with one slug per line ("#" starts a
+// comment).
+func parseSlugList(flagName, v string) ([]string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil, nil
+	}
+	items := strings.Split(v, ",")
+	if data, err := os.ReadFile(v); err == nil {
+		items = strings.Split(string(data), "\n")
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, it := range items {
+		it, _, _ = strings.Cut(it, "#")
+		it = strings.TrimSpace(it)
+		if it == "" || seen[strings.ToLower(it)] {
+			continue
+		}
+		if !slugListRe.MatchString(it) {
+			return nil, fmt.Errorf("--%s: %q is not a plugin or theme slug", flagName, it)
+		}
+		seen[strings.ToLower(it)] = true
+		out = append(out, it)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("--%s is empty", flagName)
+	}
+	return out, nil
 }
 
 // Crawl limits: how many extra pages discovery reads by default, at most.
@@ -348,6 +408,14 @@ Detection:
       --crawl N               Extra pages read to find plugins and themes: one per kind
                               of page from the sitemaps and the homepage's links, plus
                               the login page (default 10; 0 to read only the homepage)
+      --plugins-list LIST     Check these plugins, one request each, instead of an -e list: slugs
+                              separated by commas, or a file with one slug per line
+      --themes-list LIST      Same for themes
+      --wp-content-dir DIR    The content directory, when detection gets it wrong
+                              (e.g. app/ or https://cdn.example.com/content/)
+      --wp-plugins-dir DIR    The plugins directory (default: <content dir>/plugins/)
+      --stealthy              A browser User-Agent and passive detection: only the pages a
+                              visitor's browser would load (as WPScan's --stealthy)
 
 HTTP:
       --user-agent UA         User-Agent to send
@@ -366,6 +434,8 @@ Output:
   -o, --output FILE           Write results to FILE instead of stdout
       --no-color              Disable colored output
   -v, --verbose               Show how each finding was detected
+      --possible              List the possible vulnerabilities (those of components whose
+                              version is unknown) instead of only counting them
       --dry-run               Print the scan plan and exit without sending any request
 
 Data:
@@ -379,5 +449,6 @@ Exit codes:
   3    A pre-flight check stopped the scan (unreachable, authentication required,
        403, out-of-scope redirect, not WordPress, WordPress.com, unfinished
        install); the report says why
+  5    The scan completed and found confirmed or likely vulnerabilities
   130  Interrupted with Ctrl-C; the partial report is still written
 `

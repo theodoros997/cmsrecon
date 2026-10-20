@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/theodoros997/cmsrecon/internal/scan"
 )
 
 func TestRun(t *testing.T) {
@@ -35,6 +37,13 @@ func TestRun(t *testing.T) {
 		{"nothing to enumerate", []string{"-u", "example.com", "-e", "none", "--dry-run"}, exitOK, nil},
 		{"conflicting enumeration", []string{"-u", "example.com", "-e", "vp,ap", "--dry-run"}, exitUsage, nil},
 		{"missing url", []string{"scan", "--dry-run"}, exitUsage, nil},
+		{"stealthy", []string{"-u", "example.com", "--stealthy", "--dry-run"}, exitOK,
+			[]string{"Detection mode:  passive", "homepage and 404 page only"}},
+		{"named plugins and folders", []string{"-u", "example.com", "--plugins-list", "akismet, contact-form-7", "--themes-list", "astra",
+			"--wp-content-dir", "assets", "--wp-plugins-dir", "https://cdn.example.com/ext/", "--dry-run"}, exitOK,
+			[]string{"found on the site, then check of the named plugins (2)", "check of the named themes (1)", "wp-content:      assets", "Plugins folder:  https://cdn.example.com/ext/"}},
+		{"bad named plugin", []string{"-u", "example.com", "--plugins-list", "../etc", "--dry-run"}, exitUsage, nil},
+		{"scan help lists exit code 5", []string{"scan", "-h"}, exitOK, []string{"5    The scan completed and found confirmed or likely vulnerabilities"}},
 		{"update help", []string{"update", "-h"}, exitOK, []string{"cmsrecon update [options]", "retirejs"}},
 		{"update unknown source", []string{"update", "--sources", "nvd"}, exitUsage, nil},
 	}
@@ -142,5 +151,25 @@ func TestOutputFileError(t *testing.T) {
 	bad := filepath.Join(t.TempDir(), "missing-dir", "report.json")
 	if code := run([]string{"-u", "example.com", "-o", bad}, &stdout, &stderr); code != exitError {
 		t.Errorf("exit code = %d, want %d", code, exitError)
+	}
+}
+
+func TestScanExit(t *testing.T) {
+	tests := []struct {
+		name string
+		res  scan.Result
+		want int
+	}{
+		{"clean", scan.Result{Status: scan.StatusCompleted}, exitOK},
+		{"possible only", scan.Result{Status: scan.StatusCompleted, VulnerabilityCounts: scan.VulnCounts{Possible: 40}}, exitOK},
+		{"likely", scan.Result{Status: scan.StatusCompleted, VulnerabilityCounts: scan.VulnCounts{Likely: 1}}, exitVulnerable},
+		{"confirmed", scan.Result{Status: scan.StatusCompleted, VulnerabilityCounts: scan.VulnCounts{Confirmed: 2}}, exitVulnerable},
+		{"stopped", scan.Result{Status: scan.StatusStopped}, exitStopped},
+		{"interrupted with vulnerabilities", scan.Result{Status: scan.StatusInterrupted, VulnerabilityCounts: scan.VulnCounts{Confirmed: 1}}, exitInterrupted},
+	}
+	for _, tt := range tests {
+		if got := scanExit(&tt.res); got != tt.want {
+			t.Errorf("%s: scanExit = %d, want %d", tt.name, got, tt.want)
+		}
 	}
 }

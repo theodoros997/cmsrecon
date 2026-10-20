@@ -17,12 +17,43 @@ import (
 
 // component collects what a scan learns about one plugin or theme.
 type component struct {
-	slug     string
-	location string
-	name     string
-	readme   string
-	evidence []Evidence // that it is installed
-	versions []Evidence // what its version is
+	slug      string
+	name      string
+	readme    string
+	evidence  []Evidence // that it is installed
+	versions  []Evidence // what its version is
+	observed  bool       // a page referenced a file in its folder
+	confirmed bool       // a request showed the folder exists: a readme, a listing, a brute-force hit, an asset
+	assets    []string   // in-scope URLs of its files the pages referenced, at most three
+	gone      bool       // the first of those files is gone (404 or 410)
+}
+
+// Evidence methods that only suggest a plugin: a REST namespace or a meta
+// generator that happens to match a slug. A plugin found only by these is
+// reported once a request confirms its folder.
+const (
+	methodRESTGuess        = "REST API namespace named like the plugin"
+	methodGenericGenerator = "Meta generator naming the plugin"
+)
+
+// weakOnly reports whether every piece of evidence is a guess.
+func (c *component) weakOnly() bool {
+	for _, e := range c.evidence {
+		if e.Method != methodRESTGuess && e.Method != methodGenericGenerator {
+			return false
+		}
+	}
+	return true
+}
+
+// urlsOnly reports whether the only evidence is links in pages.
+func (c *component) urlsOnly() bool {
+	for _, e := range c.evidence {
+		if !strings.HasPrefix(e.Method, "URLs in the ") && !strings.HasPrefix(e.Method, "Theme URLs in the ") {
+			return false
+		}
+	}
+	return len(c.evidence) > 0
 }
 
 // componentSet is a concurrency-safe set of components keyed by slug,
@@ -67,6 +98,25 @@ func (cs *componentSet) addVersion(slug string, e Evidence) {
 	if !slices.ContainsFunc(c.versions, func(o Evidence) bool { return o.Method == e.Method && o.Value == e.Value }) {
 		c.versions = append(c.versions, e)
 	}
+}
+
+// observe records an in-scope URL of one of slug's files that a page
+// referenced.
+func (cs *componentSet) observe(slug, u string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	c := cs.get(slug)
+	c.observed = true
+	if u != "" && len(c.assets) < 3 && !slices.Contains(c.assets, u) {
+		c.assets = append(c.assets, u)
+	}
+}
+
+// confirm records that a request showed slug's folder exists.
+func (cs *componentSet) confirm(slug string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.get(slug).confirmed = true
 }
 
 func (cs *componentSet) has(slug string) bool {
@@ -180,10 +230,20 @@ func slugIn(path, prefix string) string {
 		rest = path[i+len(prefixTail(prefix)):]
 	}
 	slug, _, isDir := strings.Cut(rest, "/")
-	if !isDir || slug == "" || slug == "." || slug == ".." {
+	if !isDir || !validSlug(slug) {
 		return ""
 	}
 	return slug
+}
+
+var slugRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+// validSlug reports whether s can be a plugin or theme folder name. It
+// rejects what page text contains around real paths: template
+// placeholders ("${slug}", "%s", "{{name}}"), escaped and encoded
+// characters, and "." and "..".
+func validSlug(s string) bool {
+	return slugRe.MatchString(s) && !strings.Contains(s, "..")
 }
 
 // prefixTail returns the last two segments of a directory path:
@@ -233,6 +293,22 @@ func isCoreVersion(v string, core *Version) bool {
 var vendorDirRe = regexp.MustCompile(`(?i)/(?:vendor|vendors|node_modules|lib|libs|library|libraries|third-party|thirdparty|external|bower_components)/`)
 
 func vendored(path string) bool { return vendorDirRe.MatchString(path) }
+
+// pathOf returns the lower-case path of a URL.
+func pathOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Path)
+}
+
+// isLibraryURL reports whether a URL is a JavaScript library cmsrecon
+// recognizes, such as a copy of Select2 bundled in a plugin.
+func (s *Scanner) isLibraryURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && len(s.data.js.FromURL(u)) > 0
+}
 
 // assetVersionConfidence: the more assets agree, the more likely ?ver= is
 // the component's version: 40% for one asset, up to 60% for three.

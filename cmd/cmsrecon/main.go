@@ -29,6 +29,7 @@ const (
 	exitError       = 1   // cmsrecon itself failed, e.g. the report could not be written
 	exitUsage       = 2   // invalid command line
 	exitStopped     = 3   // a pre-flight check stopped the scan; the report says why
+	exitVulnerable  = 5   // the scan completed and found confirmed or likely vulnerabilities, as WPScan's 5
 	exitInterrupted = 130 // interrupted with Ctrl-C; the partial report is still written
 )
 
@@ -142,11 +143,18 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Report written to %s\n", opts.Output)
 	}
 
-	switch res.Status {
-	case scan.StatusStopped:
+	return scanExit(res)
+}
+
+// scanExit is the exit code of a scan that wrote its report.
+func scanExit(res *scan.Result) int {
+	switch {
+	case res.Status == scan.StatusStopped:
 		return exitStopped
-	case scan.StatusInterrupted:
+	case res.Status == scan.StatusInterrupted:
 		return exitInterrupted
+	case res.VulnerabilityCounts.Confirmed+res.VulnerabilityCounts.Likely > 0:
+		return exitVulnerable
 	}
 	return exitOK
 }
@@ -204,8 +212,14 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 	if o.WPAuth != nil {
 		row("Plugins and themes", "REST API inventory as "+o.WPAuth.Username)
 	} else {
-		row("Plugins", detectionPlan(o, o.PluginsDetection, e.Plugins, "plugins"))
-		row("Themes", detectionPlan(o, o.ThemesDetection, e.Themes, "themes"))
+		row("Plugins", detectionPlan(o, o.PluginsDetection, e.Plugins, o.PluginsList, "plugins"))
+		row("Themes", detectionPlan(o, o.ThemesDetection, e.Themes, o.ThemesList, "themes"))
+	}
+	if o.ContentDir != "" {
+		row("wp-content", o.ContentDir)
+	}
+	if o.PluginsDir != "" {
+		row("Plugins folder", o.PluginsDir)
 	}
 	crawl := "homepage and 404 page only"
 	if o.CrawlPages > 0 && o.DetectionMode != cli.ModePassive {
@@ -239,12 +253,16 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 }
 
 // detectionPlan describes how plugins or themes will be found.
-func detectionPlan(o *cli.ScanOptions, mode cli.DetectionMode, list cli.ItemSet, what string) string {
+func detectionPlan(o *cli.ScanOptions, mode cli.DetectionMode, list cli.ItemSet, named []string, what string) string {
 	var parts []string
 	if mode.Discover() {
 		parts = append(parts, "found on the site")
 	}
 	switch {
+	case len(named) > 0 && o.DetectionMode == cli.ModePassive:
+		parts = append(parts, fmt.Sprintf("no check of the named %s (%d) in passive detection mode", what, len(named)))
+	case len(named) > 0:
+		parts = append(parts, fmt.Sprintf("check of the named %s (%d)", what, len(named)))
 	case mode.BruteForce() && o.DetectionMode == cli.ModePassive:
 		parts = append(parts, "no brute force in passive detection mode")
 	case mode.BruteForce() && list != cli.ItemsNone:

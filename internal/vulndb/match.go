@@ -28,6 +28,7 @@ type Detected struct {
 	Version      string   // empty when unknown
 	Confidence   int      // of Version
 	Alternatives []string // other candidate versions a scan could not rule out
+	Latest       string   // the latest release, when known; used when Version is unknown
 }
 
 // Match is an advisory that applies, or may apply, to a detected version.
@@ -40,8 +41,10 @@ type Match struct {
 }
 
 // Match returns the advisories of a piece of software that apply to the
-// detected version, strongest verdict first. With an unknown version,
-// every advisory is a possible match.
+// detected version, strongest verdict first. With an unknown version, an
+// advisory that affects every version up to the latest release (or every
+// version, when no fix exists) is a likely match: whatever the version, it
+// is affected. The other advisories are possible matches.
 func (db *DB) Match(kind, slug string, d Detected) []Match {
 	return MatchAdvisories(db.Advisories(kind, slug), d)
 }
@@ -55,6 +58,14 @@ func MatchAdvisories(advs []*Advisory, d Detected) []Match {
 		m := Match{Advisory: a, Affected: rangeStrings(primary.Affected), FixedIn: fixedIn(a.Fixed, v)}
 		if v == "" {
 			m.Verdict = VerdictPossible
+			if affectsEveryVersion(primary.Affected, Normalize(d.Latest)) {
+				m.Verdict = VerdictLikely
+				if d.Latest != "" && hasUpperBound(primary.Affected) {
+					m.Note = "The version is unknown, but every version up to the latest (" + d.Latest + ") is affected"
+				} else {
+					m.Note = "The version is unknown, but every version is affected"
+				}
+			}
 			out = append(out, m)
 			continue
 		}
@@ -88,6 +99,30 @@ func MatchAdvisories(advs []*Advisory, d Detected) []Match {
 	}
 	SortMatches(out)
 	return out
+}
+
+// affectsEveryVersion reports whether a range with no lower bound covers
+// every version: it has no upper bound either, or it reaches the latest
+// release.
+func affectsEveryVersion(ranges []Range, latest string) bool {
+	for _, r := range ranges {
+		if r.From != "" {
+			continue
+		}
+		if r.To == "" || (latest != "" && r.Contains(latest)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUpperBound(ranges []Range) bool {
+	for _, r := range ranges {
+		if r.To != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func alternativesAgree(ranges []Range, alts []string, in bool) bool {

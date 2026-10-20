@@ -40,6 +40,9 @@ cmsrecon -u https://example.com
 cmsrecon scan https://example.com -v --proxy http://127.0.0.1:8080
 cmsrecon scan https://example.com --detection-mode passive -f json -o report.json
 cmsrecon -u https://example.com --plugins-detection mixed -e vp,vt   # also brute-force plugin folders
+cmsrecon -u https://example.com --plugins-list akismet,elementor      # also check these plugins, and no others
+cmsrecon -u https://example.com --stealthy                            # browser User-Agent, passive detection
+cmsrecon -u https://example.com --possible                            # list every possible vulnerability
 cmsrecon -u https://example.com --dry-run
 cmsrecon scan -h
 cmsrecon update -h
@@ -57,17 +60,40 @@ By default cmsrecon finds the plugins and themes the site actually uses, then ma
 - **Asset links and signatures:** in every page read, it looks for `/wp-content/plugins/<name>/` and `/themes/<name>/` links, 160 signatures (HTML comments, generator tags, JavaScript settings, CSS classes, headers, cache folders) and the version hints in `?ver=`.
 - **REST API and sitemaps:** the REST API index names the plugins that register routes (`yoast/v1` is Yoast SEO), and the sitemaps' post types name more (`product` is WooCommerce).
 - **Directory listings:** one request each to `/wp-content/plugins/` and `/wp-content/themes/`. On a misconfigured server, these list everything installed, inactive plugins included.
-- **Versions:** each plugin found gets its `readme.txt` read for its name and version, and each theme its `style.css`.
+- **Versions:** each plugin found gets its `readme.txt` read for its name and version, then its changelog, then the banner at the top of one of its own scripts or stylesheets the pages load (`/*! elementor - v3.5.0 */`). Each theme gets its `style.css` read.
+- **Nothing made up:** a name is only a plugin or theme if it looks like a WordPress slug, so template placeholders such as `${slug}` or `%s` in a page's JavaScript are ignored. A plugin known only from a link is checked by requesting the linked file, and dropped when the file is gone (a link left in an old post to a removed plugin). A plugin known only from a hint (a REST namespace or a generator tag that names it) is kept only when its folder or readme answers. The location printed is a folder the site linked to or answered for, never a guessed path.
 
 This is what WPScan does by default (its `--plugins-detection` is `passive`), plus the crawl, the REST API, the sitemaps and the listings, which WPScan does not read.
 
 Inactive plugins load nothing on the pages, so only brute force finds them: `--plugins-detection mixed` (or `--themes-detection mixed`) also requests the folder of every plugin on the `-e` list, one request each. That is thousands of requests: the vulnerable list holds about 17,000 plugins after `cmsrecon update`. As in WPScan, `aggressive` brute-forces without the discovery.
 
+To check only a few plugins or themes you suspect, name them: `--plugins-list akismet,elementor` or `--themes-list astra` (a comma-separated list, or a file with one slug per line and `#` comments). The scan then requests those folders and no others, whatever `--plugins-detection` says. When the site moved its folders and detection misses it, `--wp-content-dir` and `--wp-plugins-dir` set them (a path relative to the target, or a full URL).
+
+For each plugin and theme found, the report says when WordPress.org last saw an update and warns when that was more than two years ago. Outside passive mode it also requests the item's folder, warning when the server lists its files, and its `error_log`, a PHP error log some hosts write next to the failing script that can disclose paths and data. That is two requests per item.
+
 `-e` takes the same choices as WPScan's `--enumerate`: `vp`/`p`/`ap` (vulnerable, popular or all plugins), `vt`/`t`/`at` (themes), `cb` (config backups), `dbe` (database exports), `bf` (backup folders) and `u[RANGE]` (users). The default is `vp,vt,cb,dbe,bf,u`. The plugin and theme lists only matter with brute force. They come from `cmsrecon update`: the vulnerable lists from the vulnerability data, the full lists from WordPress.org. Without them the popular lists are used and the report says so. For the quietest scan, `-e vp,vt,u` skips the backup-file guesses and `--detection-mode passive` reads only the homepage, the 404 page and its feeds.
 
 `--detection-mode` works as in WPScan: `passive` only reads pages the scan fetches anyway, `aggressive` only runs the checks that request specific paths, and `mixed` (the default) runs both. `-v` shows how each finding was detected and how confident cmsrecon is. The JSON format is documented in [docs/json-report.md](docs/json-report.md).
 
-The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in the target's logs; `--random-user-agent` or `--user-agent` changes it. Only an explicit `--proxy` is used: `HTTP_PROXY` and similar variables are ignored.
+The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in the target's logs; `--random-user-agent` or `--user-agent` changes it. `--stealthy`, as in WPScan, is `--random-user-agent --detection-mode passive`. Only an explicit `--proxy` is used: `HTTP_PROXY` and similar variables are ignored.
+
+### Reading the vulnerabilities
+
+Each vulnerability has a verdict:
+
+- **confirmed:** the detected version is in the affected range, and the version is certain.
+- **likely:** the version is in the range but less certain, or the sources disagree. Also used when the version is unknown but every release up to the latest is affected, since then any installed version is.
+- **possible:** the version is unknown, or only a secondary source puts it in the range.
+
+A plugin with no known version "may" be affected by every vulnerability ever published for it, often dozens. Listing them all buries the ones that matter, so the possible ones are summed up in one line per plugin or theme:
+
+```
+[+] wpforms-lite (confidence 80%)
+    | Version: unknown (the latest is 1.9.2)
+    | Possible vulnerabilities: 23 (2 critical, 6 high), all fixed in 1.8.9 (not listed: the version is unknown; --possible lists them)
+```
+
+`--possible` lists them in full, in the CLI and in the JSON report. The JSON report always has the summary in `possible_vulnerabilities`.
 
 ### Exit codes
 
@@ -79,6 +105,7 @@ The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in t
 | 1 | cmsrecon failed, e.g. the report file could not be written |
 | 2 | Invalid command line |
 | 3 | A pre-flight check stopped the scan: unreachable, authentication required, 403, a redirect to an out-of-scope host, not WordPress, hosted on WordPress.com, or an unfinished install. The report says why |
+| 5 | The scan completed and found confirmed or likely vulnerabilities (possible ones do not count), as WPScan's exit code 5 |
 | 130 | Interrupted with Ctrl-C; the partial report is still written |
 
 `cmsrecon update` exits with 0 when every requested source was updated or skipped (Wordfence without a key), 1 when a source failed (the others are still updated), 2 for an invalid command line and 130 when interrupted.
@@ -88,14 +115,14 @@ The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in t
 - **Pre-flight:** reachability, redirects, WordPress detection, unfinished installs
 - **Interesting findings:** exposed logs, dumps, backup folders, readme, directory listings, XML-RPC, open registration, multisite and more
 - **WordPress core version** from feeds, meta tags, assets and file hashes
-- **Themes and plugins:** discovery from a small crawl, sitemaps, REST API namespaces, 160 passive signatures (130 plugins) and directory listings, with optional brute force; versions from readmes, changelogs, `style.css` and `?ver=`, and whether each is outdated
+- **Themes and plugins:** discovery from a small crawl, sitemaps, REST API namespaces, 160 passive signatures (130 plugins) and directory listings, with optional brute force; versions from readmes, changelogs, file banners, `style.css` and `?ver=`, whether each is outdated or abandoned, and whether its folder lists files or exposes an error log
 - **JavaScript libraries:** jQuery, Bootstrap, Lodash, Moment and 60 more, from script URLs and version banners
 - **Users:** REST API, oEmbed, feeds, sitemaps and author IDs
 - **Exposed backups:** `wp-config.php` copies, database exports and backup plugin folders
 - **Authenticated inventory:** the exact plugin and theme list via an Application Password (`--wp-auth`)
-- **Vulnerabilities** for core, themes, plugins and JavaScript libraries, each with a verdict: **confirmed** (the detected version is affected), **likely** (affected, but the version is less certain or the sources disagree) or **possible** (the version is unknown; listed with `-v`)
+- **Vulnerabilities** for core, themes, plugins and JavaScript libraries, each with a verdict: **confirmed** (the detected version is affected), **likely** (affected, but the version is less certain or the sources disagree) or **possible** (the version is unknown; summed up per plugin, listed with `--possible`)
 
-[docs/checks.md](docs/checks.md) lists every check, the request it makes, the WPScan finder it corresponds to, and its planned release.
+[docs/checks.md](docs/checks.md) lists every check, the request it makes, the WPScan finder it corresponds to, and its planned release. Its last section compares cmsrecon with WPScan feature by feature.
 
 ## Vulnerability data
 

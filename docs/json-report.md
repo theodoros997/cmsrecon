@@ -28,7 +28,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `js_libraries` | [JSLibrary](#jslibrary) list | Sorted by name |
 | `users` | [User](#user) list | Sorted by ID, then name; empty unless users were enumerated (`-e u`) |
 | `vulnerability_data` | object or null | The data the scan matched against: `directory` (the `--data-dir`) and `sources`, a list of `name` (`wordfence`, `cve`, `wporg` or `retirejs`), `updated_at` (RFC 3339) and `entries` (vulnerabilities, slugs or libraries). `sources` is empty before `cmsrecon update` |
-| `vulnerability_counts` | object | `confirmed`, `likely` and `possible`: the vulnerabilities of every component by verdict |
+| `vulnerability_counts` | object | `confirmed`, `likely` and `possible`: the vulnerabilities of every component by verdict. `possible` counts the summed-up ones too (see `possible_vulnerabilities`) |
 | `notices` | string list | Things the user should know, e.g. missing or stale vulnerability data, or a list that replaced another |
 | `errors` | list | Requests that failed (`url`, `error`). A failed request does not stop the scan; the check that needed it reports nothing |
 | `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead) and `elapsed_seconds` |
@@ -138,7 +138,10 @@ The last three come from `-e cb`, `dbe` and `bf`. [checks.md](checks.md#interest
 | `version` | [Version](#version) | The theme version; `number` is empty when unknown |
 | `parent` | Theme | The parent of a child theme; omitted otherwise. Its own `parent` is always omitted |
 | `evidence` | [Evidence](#evidence) list | Why this theme was chosen (main theme), or how it was found (other themes) |
-| `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first |
+| `last_updated` | string | When WordPress.org last saw an update, `YYYY-MM-DD`; omitted when unknown (not on WordPress.org, or no `cmsrecon update`) |
+| `warnings` | string list | What its folder exposes (a directory listing, a PHP `error_log`), and whether it looks abandoned (no update on WordPress.org for two years) |
+| `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first. Without `--possible`, only `confirmed` and `likely` ones |
+| `possible_vulnerabilities` | [PossibleVulns](#possiblevulns) | A summary of the `possible` ones; omitted when there are none |
 
 ## Plugin
 
@@ -146,12 +149,26 @@ The last three come from `-e cb`, `dbe` and `bf`. [checks.md](checks.md#interest
 |---|---|---|
 | `slug` | string | Directory name under `plugins/` |
 | `name` | string | From its readme; omitted when not read |
-| `location` | string | The plugin directory URL |
+| `location` | string | The plugin directory URL, only when the site linked to it or it answered; omitted for a plugin known only from a hint such as a REST namespace or a signature, rather than guessing the path |
 | `readme_url` | string | The readme that was read; omitted when none was found |
 | `confidence` | integer | Combined confidence that the plugin is installed |
 | `version` | [Version](#version) | `number` is empty when unknown |
 | `evidence` | [Evidence](#evidence) list | How it was found, strongest first |
-| `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first |
+| `last_updated` | string | As for themes |
+| `warnings` | string list | As for themes |
+| `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first. Without `--possible`, only `confirmed` and `likely` ones |
+| `possible_vulnerabilities` | [PossibleVulns](#possiblevulns) | A summary of the `possible` ones; omitted when there are none |
+
+## PossibleVulns
+
+The vulnerabilities that only may apply to a plugin or theme, because its version is unknown or only a secondary source puts it in the affected range. A plugin of unknown version can have dozens; the summary keeps the report readable. `--possible` lists them in `vulnerabilities` as well.
+
+| Field | Type | Description |
+|---|---|---|
+| `count` | integer | How many |
+| `critical`, `high` | integer | How many of them are rated critical or high |
+| `fixed_in` | string | The version that fixes all of them; omitted when one has no known fix |
+| `listed` | boolean | Whether they are also in `vulnerabilities` (`--possible`) |
 
 ## JSLibrary
 
@@ -188,7 +205,7 @@ The last three come from `-e cb`, `dbe` and `bf`. [checks.md](checks.md#interest
 | `unfixed` | boolean | The source says no fix exists; omitted when false |
 | `published` | string | `YYYY-MM-DD`; omitted when unknown |
 | `sources` | string list | `wordfence`, `cve` or `retirejs`, primary first |
-| `note` | string | Why the verdict is not `confirmed`, e.g. the sources disagree on the affected versions; omitted otherwise |
+| `note` | string | Why the verdict is not `confirmed`, e.g. the sources disagree on the affected versions, or the version is unknown but every version up to the latest is affected; omitted otherwise |
 | `references` | string list | Advisory and patch links |
 
 ## Example
@@ -264,6 +281,8 @@ Abridged output of a mixed-mode scan:
       { "method": "Theme URLs in the homepage", "mode": "passive", "url": "https://blog.example.com/", "value": "twentytwentyfour", "confidence": 40 },
       { "method": "Theme URLs in the 404 page", "mode": "passive", "url": "https://blog.example.com/3f9c0a1b2c4d5e6f/", "value": "twentytwentyfour", "confidence": 40 }
     ],
+    "last_updated": "2026-08-12",
+    "warnings": [],
     "vulnerabilities": []
   },
   "themes": [],
@@ -289,6 +308,8 @@ Abridged output of a mixed-mode scan:
         { "method": "readme.txt", "mode": "aggressive", "url": "https://blog.example.com/wp-content/plugins/contact-form-7/readme.txt", "confidence": 100 },
         { "method": "REST API namespace", "mode": "passive", "url": "https://blog.example.com/wp-json/", "value": "contact-form-7/v1", "confidence": 90 }
       ],
+      "last_updated": "2026-09-30",
+      "warnings": ["Directory listing is enabled: https://blog.example.com/wp-content/plugins/contact-form-7/ (9 entries)"],
       "vulnerabilities": [
         {
           "title": "Contact Form 7 <= 5.3.1 - Unrestricted File Upload",
