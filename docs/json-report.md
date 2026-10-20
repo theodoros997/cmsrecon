@@ -68,7 +68,7 @@ One signal behind a finding, version or theme.
 | Field | Type | Description |
 |---|---|---|
 | `method` | string | How it was found, e.g. `Meta generator`, `X-Pingback header`, `Direct access` |
-| `mode` | string | `passive` (read from a page the scan fetches anyway) or `aggressive` (a request to a specific path) |
+| `mode` | string | `passive` (read from a page the scan fetches anyway: the homepage, the 404 page, the feeds and REST API index it links to) or `aggressive` (from a request the scan made for the check: a specific path, or a page the discovery crawl read) |
 | `url` | string | The page or file the signal came from; omitted when not applicable |
 | `value` | string | What the signal said, e.g. a version number or header value; omitted when empty |
 | `confidence` | integer | 0-100 |

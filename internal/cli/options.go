@@ -39,13 +39,20 @@ type Credentials struct {
 
 // ScanOptions is a validated scan configuration.
 type ScanOptions struct {
-	Target         *url.URL
-	Enumerate      Enumeration
-	DetectionMode  DetectionMode
-	Force          bool
-	FollowRedirect bool
-	Scope          []string
-	WPAuth         *Credentials // WordPress Application Password for the REST inventory
+	Target        *url.URL
+	Enumerate     Enumeration
+	DetectionMode DetectionMode
+	// PluginsDetection and ThemesDetection work as WPScan's
+	// --plugins-detection: passive (the default) finds what the site
+	// uses without guessing, mixed adds brute force of the -e list, and
+	// aggressive only brute-forces.
+	PluginsDetection DetectionMode
+	ThemesDetection  DetectionMode
+	CrawlPages       int // extra pages read to discover plugins and themes
+	Force            bool
+	FollowRedirect   bool
+	Scope            []string
+	WPAuth           *Credentials // WordPress Application Password for the REST inventory
 
 	UserAgent       string
 	RandomUserAgent bool
@@ -72,7 +79,7 @@ type ScanOptions struct {
 // flag.ErrHelp.
 func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	o := &ScanOptions{}
-	var target, enumerate, mode, format, scope, proxy, httpAuth, wpAuth string
+	var target, enumerate, mode, pluginsMode, themesMode, format, scope, proxy, httpAuth, wpAuth string
 	headers := headerFlag{}
 
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
@@ -89,6 +96,9 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.StringVar(&enumerate, "e", DefaultEnumeration, "")
 	fs.StringVar(&enumerate, "enumerate", DefaultEnumeration, "")
 	fs.StringVar(&mode, "detection-mode", string(ModeMixed), "")
+	fs.StringVar(&pluginsMode, "plugins-detection", string(ModePassive), "")
+	fs.StringVar(&themesMode, "themes-detection", string(ModePassive), "")
+	fs.IntVar(&o.CrawlPages, "crawl", DefaultCrawlPages, "")
 
 	fs.StringVar(&o.UserAgent, "user-agent", "", "")
 	fs.BoolVar(&o.RandomUserAgent, "random-user-agent", false, "")
@@ -145,8 +155,17 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	if o.Enumerate, err = ParseEnumeration(enumerate); err != nil {
 		return nil, err
 	}
-	if o.DetectionMode, err = parseMode(mode); err != nil {
+	if o.DetectionMode, err = parseMode("detection-mode", mode); err != nil {
 		return nil, err
+	}
+	if o.PluginsDetection, err = parseMode("plugins-detection", pluginsMode); err != nil {
+		return nil, err
+	}
+	if o.ThemesDetection, err = parseMode("themes-detection", themesMode); err != nil {
+		return nil, err
+	}
+	if o.CrawlPages < 0 || o.CrawlPages > MaxCrawlPages {
+		return nil, fmt.Errorf("--crawl must be between 0 and %d", MaxCrawlPages)
 	}
 	if o.Format, err = parseFormat(format); err != nil {
 		return nil, err
@@ -221,13 +240,28 @@ func normalizeTarget(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-func parseMode(s string) (DetectionMode, error) {
+// Crawl limits: how many extra pages discovery reads by default, at most.
+const (
+	DefaultCrawlPages = 10
+	MaxCrawlPages     = 100
+)
+
+func parseMode(flagName, s string) (DetectionMode, error) {
 	switch m := DetectionMode(strings.ToLower(s)); m {
 	case ModePassive, ModeMixed, ModeAggressive:
 		return m, nil
 	}
-	return "", fmt.Errorf("invalid --detection-mode %q (use passive, mixed or aggressive)", s)
+	return "", fmt.Errorf("invalid --%s %q (use passive, mixed or aggressive)", flagName, s)
 }
+
+// BruteForce reports whether a --plugins-detection or --themes-detection
+// mode brute-forces the -e list.
+func (m DetectionMode) BruteForce() bool { return m == ModeMixed || m == ModeAggressive }
+
+// Discover reports whether a --plugins-detection or --themes-detection
+// mode finds plugins and themes from what the site shows. The zero value
+// counts as passive.
+func (m DetectionMode) Discover() bool { return m != ModeAggressive }
 
 func parseFormat(s string) (Format, error) {
 	switch f := Format(strings.ToLower(s)); f {
@@ -303,9 +337,17 @@ Detection:
                                 dbe           database exports
                                 bf            backup folders with directory listing
                                 u[RANGE]      users, checking author IDs RANGE (default u1-10)
-                              The vulnerable and all lists need "cmsrecon update"; until
-                              then the popular lists are used
       --detection-mode MODE   passive, mixed or aggressive (default mixed)
+      --plugins-detection MODE
+                              passive (default): find the plugins the site uses from its
+                              pages, sitemaps, REST API and directory listings, without
+                              guessing; mixed: also brute-force every plugin of the -e
+                              list (vp, p or ap: thousands of requests); aggressive:
+                              brute force only. Vulnerabilities are matched either way
+      --themes-detection MODE Same for themes (default passive)
+      --crawl N               Extra pages read to find plugins and themes: one per kind
+                              of page from the sitemaps and the homepage's links, plus
+                              the login page (default 10; 0 to read only the homepage)
 
 HTTP:
       --user-agent UA         User-Agent to send

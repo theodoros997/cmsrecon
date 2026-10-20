@@ -46,20 +46,27 @@ func (cs *componentSet) get(slug string) *component {
 	return c
 }
 
-// add records that slug is installed.
+// add records that slug is installed. A method already recorded for slug
+// is not repeated: the first page it was seen on is evidence enough, and
+// confidence counts each method once anyway.
 func (cs *componentSet) add(slug string, e Evidence) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	c := cs.get(slug)
-	c.evidence = append(c.evidence, e)
+	if !slices.ContainsFunc(c.evidence, func(o Evidence) bool { return o.Method == e.Method }) {
+		c.evidence = append(c.evidence, e)
+	}
 }
 
-// addVersion records a version signal for slug.
+// addVersion records a version signal for slug, once per method and
+// version.
 func (cs *componentSet) addVersion(slug string, e Evidence) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	c := cs.get(slug)
-	c.versions = append(c.versions, e)
+	if !slices.ContainsFunc(c.versions, func(o Evidence) bool { return o.Method == e.Method && o.Value == e.Value }) {
+		c.versions = append(c.versions, e)
+	}
 }
 
 func (cs *componentSet) has(slug string) bool {

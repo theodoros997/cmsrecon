@@ -211,6 +211,7 @@ func options(target string, mode cli.DetectionMode) *cli.ScanOptions {
 	}
 	return &cli.ScanOptions{
 		Target: u, DetectionMode: mode, Threads: 5, Timeout: 5 * time.Second, Headers: http.Header{},
+		PluginsDetection: cli.ModePassive, ThemesDetection: cli.ModePassive, CrawlPages: cli.DefaultCrawlPages,
 	}
 }
 
