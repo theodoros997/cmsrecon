@@ -193,23 +193,42 @@ func (s *Scanner) checkDebugLog(ctx context.Context) []Finding {
 // plain text, e.g. "Fatal error</b>: ... in <b>/var/www/x.php</b> on line".
 var fullPathRe = regexp.MustCompile(`(?is)\b(?:fatal error|warning|notice|parse error|deprecated|uncaught)\b.{0,500}? in (?:<b>)?((?:/|[a-z]:[\\/])[^<>"'\s:]*?\.php)(?:</b>)?(?:\s+on line|:\d+)`)
 
+// fullPathFiles are core files that fail with a PHP error when requested
+// directly, which names their path if display_errors is on. Modern
+// releases guard rss-functions.php with an ABSPATH check, so it only
+// works on old ones; the others still fail.
+var fullPathFiles = []string{
+	"wp-includes/rss.php",
+	"wp-includes/template-loader.php",
+	"wp-admin/includes/admin.php",
+	"wp-includes/rss-functions.php",
+}
+
 func (s *Scanner) checkFullPathDisclosure(ctx context.Context) []Finding {
 	if !s.aggressive() {
 		return nil
 	}
-	u := s.url("wp-includes/rss-functions.php")
-	res := s.get(ctx, u)
-	if res == nil {
-		return nil
+	urls := make([]string, 0, len(fullPathFiles)+1)
+	for _, f := range fullPathFiles {
+		urls = append(urls, s.url(f))
 	}
-	m := fullPathRe.FindSubmatch(res.Body)
-	if m == nil {
-		return nil
+	// Hello Dolly ships with WordPress but is often deleted.
+	urls = append(urls, s.contentURL("plugins/hello.php"))
+	for _, u := range urls {
+		res := s.get(ctx, u)
+		if res == nil {
+			continue
+		}
+		m := fullPathRe.FindSubmatch(res.Body)
+		if m == nil {
+			continue
+		}
+		f := finding(idFullPath, "Full path disclosure", SeverityLow, u, direct(u, 100), "Disclosed path: "+string(m[1]))
+		f[0].Data = map[string]any{"path": string(m[1])}
+		f[0].References = []string{"https://owasp.org/www-community/attacks/Full_Path_Disclosure"}
+		return f
 	}
-	f := finding(idFullPath, "Full path disclosure", SeverityLow, u, direct(u, 100), "Disclosed path: "+string(m[1]))
-	f[0].Data = map[string]any{"path": string(m[1])}
-	f[0].References = []string{"https://owasp.org/www-community/attacks/Full_Path_Disclosure"}
-	return f
+	return nil
 }
 
 func (s *Scanner) checkBackupDB(ctx context.Context) []Finding {

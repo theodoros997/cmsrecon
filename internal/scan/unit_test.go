@@ -317,3 +317,17 @@ func TestFeedVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestStyleHeaderIgnoresLaterComments(t *testing.T) {
+	// Twenty Twenty's style.css has section comments such as
+	// "/* TEMPLATE: COVER */" far below its header.
+	css := []byte("/*\nTheme Name: Twenty Twenty\nVersion: 1.8\n*/\n\n/* Table of contents\n\ta. \tTemplate: Cover Template\n*/\n" +
+		strings.Repeat("body { color: red; }\n", 50) + "\t/* TEMPLATE: COVER */\n")
+	header := styleHeaderBlock(css)
+	if got := styleHeader(header, "Template"); got != "" {
+		t.Errorf("Template = %q, want none", got)
+	}
+	if got := styleHeader(header, "Version"); got != "1.8" {
+		t.Errorf("Version = %q", got)
+	}
+}

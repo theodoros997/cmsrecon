@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"bytes"
 	"context"
 	"net/url"
 	"path"
@@ -248,17 +249,29 @@ func (s *Scanner) readStyle(ctx context.Context, t *Theme) ([]Evidence, string) 
 	if res == nil || res.StatusCode != 200 {
 		return nil, ""
 	}
-	name := styleHeader(res.Body, "Theme Name")
+	header := styleHeaderBlock(res.Body)
+	name := styleHeader(header, "Theme Name")
 	if name == "" {
 		return nil, ""
 	}
 	t.Name = name
-	t.ThemeURI = styleHeader(res.Body, "Theme URI")
-	t.Author = styleHeader(res.Body, "Author")
-	t.AuthorURI = styleHeader(res.Body, "Author URI")
+	t.ThemeURI = styleHeader(header, "Theme URI")
+	t.Author = styleHeader(header, "Author")
+	t.AuthorURI = styleHeader(header, "Author URI")
 	var ev []Evidence
-	if v := styleHeader(res.Body, "Version"); v != "" {
+	if v := styleHeader(header, "Version"); v != "" {
 		ev = append(ev, Evidence{Method: "style.css Version header", Mode: modeAggressive, URL: t.StyleURL, Value: v, Confidence: confThemeStyleVersion})
 	}
-	return ev, styleHeader(res.Body, "Template")
+	return ev, styleHeader(header, "Template")
+}
+
+// styleHeaderBlock returns the comment at the top of a stylesheet, where the
+// theme headers are (WordPress reads them from the first 8 KB). Later
+// comments can contain lines such as "Template: Cover" that are not headers.
+func styleHeaderBlock(css []byte) []byte {
+	css = css[:min(len(css), 8<<10)]
+	if i := bytes.Index(css, []byte("*/")); i >= 0 {
+		return css[:i]
+	}
+	return css
 }

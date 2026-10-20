@@ -183,8 +183,11 @@ func (f *fakeWP) addExposures() *fakeWP {
 	f.routes["/readme.html"] = respond(200, "text/html", `<title>WordPress &#8250; ReadMe</title><h1 id="logo"></h1><br /> Version 6.4.2`)
 	f.routes["/wp-content/debug.log"] = respond(200, "text/plain",
 		"[20-Oct-2026 10:00:00 UTC] PHP Notice:  Undefined index: x in /var/www/html/wp-content/plugins/a/a.php on line 3\n")
-	f.routes["/wp-includes/rss-functions.php"] = respond(500, "text/html",
-		"<br />\n<b>Fatal error</b>:  Uncaught Error: Call to undefined function _deprecated_file() in /var/www/html/wp-includes/rss-functions.php:8\nStack trace:\n#0 {main}\n  thrown in <b>/var/www/html/wp-includes/rss-functions.php</b> on line <b>8</b><br />")
+	// Modern releases exit early in rss-functions.php; template-loader.php
+	// still fails when requested directly.
+	f.routes["/wp-includes/rss-functions.php"] = respond(200, "text/html", "")
+	f.routes["/wp-includes/template-loader.php"] = respond(500, "text/html",
+		"<br />\n<b>Fatal error</b>:  Uncaught Error: Call to undefined function wp_using_themes() in /var/www/html/wp-includes/template-loader.php:7\nStack trace:\n#0 {main}\n  thrown in <b>/var/www/html/wp-includes/template-loader.php</b> on line <b>7</b><br />")
 	f.routes["/wp-content/backup-db/"] = respond(403, "text/html",
 		"<html><head><title>403 Forbidden</title></head><body><h1>Forbidden</h1><p>You don't have permission to access /wp-content/backup-db/ on this server.</p></body></html>")
 	f.routes["/installer-log.txt"] = respond(200, "text/plain", "********************************************************************************\n* DUPLICATOR-LITE: INSTALL-LOG\n* VERSION: 1.5.7\n")

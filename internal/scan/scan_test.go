@@ -45,7 +45,7 @@ func TestMixedScanFindsEverything(t *testing.T) {
 	if x.Title != "XML-RPC is enabled" || x.Severity != SeverityLow {
 		t.Errorf("xmlrpc = %q / %s", x.Title, x.Severity)
 	}
-	if fpd := findingByID(r, idFullPath); fpd.Data["path"] != "/var/www/html/wp-includes/rss-functions.php" {
+	if fpd := findingByID(r, idFullPath); fpd.Data["path"] != "/var/www/html/wp-includes/template-loader.php" {
 		t.Errorf("full path = %v", fpd.Data["path"])
 	}
 	robots := findingByID(r, idRobots)
@@ -350,4 +350,39 @@ func TestChildThemeFromTheHomepageAlone(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFullPathDisclosureTriesSeveralFiles(t *testing.T) {
+	leak := func(file string) http.HandlerFunc {
+		return respond(500, "text/html", "<b>Fatal error</b>:  Uncaught Error: Call to undefined function add_action() in /srv/www/"+file+":12")
+	}
+	t.Run("stops at the first leak", func(t *testing.T) {
+		f := newFakeWP(t).addBaseSite()
+		f.routes["/wp-includes/rss.php"] = leak("wp-includes/rss.php")
+		f.routes["/wp-includes/template-loader.php"] = leak("wp-includes/template-loader.php")
+		r := runScan(t, options(f.URL(), cli.ModeAggressive))
+		if fpd := findingByID(r, idFullPath); fpd == nil || fpd.Data["path"] != "/srv/www/wp-includes/rss.php" {
+			t.Fatalf("finding = %+v", fpd)
+		}
+		if slices.Contains(f.requested(), "GET /wp-includes/template-loader.php") {
+			t.Error("the check should stop at the first leak")
+		}
+	})
+	t.Run("Hello Dolly is the last resort", func(t *testing.T) {
+		f := newFakeWP(t).addBaseSite()
+		f.routes["/wp-content/plugins/hello.php"] = leak("wp-content/plugins/hello.php")
+		r := runScan(t, options(f.URL(), cli.ModeAggressive))
+		if fpd := findingByID(r, idFullPath); fpd == nil || fpd.Data["path"] != "/srv/www/wp-content/plugins/hello.php" {
+			t.Fatalf("finding = %+v", fpd)
+		}
+	})
+	t.Run("display_errors off", func(t *testing.T) {
+		f := newFakeWP(t).addBaseSite()
+		for _, p := range fullPathFiles {
+			f.routes["/"+p] = respond(500, "text/html", "")
+		}
+		if r := runScan(t, options(f.URL(), cli.ModeAggressive)); findingByID(r, idFullPath) != nil {
+			t.Error("no path was disclosed")
+		}
+	})
 }
