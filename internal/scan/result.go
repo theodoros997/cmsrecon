@@ -72,12 +72,20 @@ type Target struct {
 	Scope        []string   `json:"scope"`
 }
 
+// Redirect reasons.
+const (
+	RedirectInScope    = "in_scope"        // followed: the target host or a --scope domain
+	RedirectFollowFlag = "follow_redirect" // followed because of --follow-redirect
+	RedirectOutOfScope = "out_of_scope"    // not followed; the scan stopped
+)
+
 // Redirect is one homepage redirect seen during pre-flight.
 type Redirect struct {
 	From     string `json:"from"`
 	To       string `json:"to"`
 	Status   int    `json:"status"`
 	Followed bool   `json:"followed"`
+	Reason   string `json:"reason"`
 }
 
 // Stop explains why the scan stopped early.

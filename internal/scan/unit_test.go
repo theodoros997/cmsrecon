@@ -199,7 +199,7 @@ func TestMainThemeSignals(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := testScanner(t, tt.body)
 			s.opts.DetectionMode = cli.ModePassive
-			th := s.detectMainTheme(t.Context())
+			th := s.detectMainTheme(t.Context(), nil)
 			if th == nil || th.Slug != tt.want {
 				t.Fatalf("main theme = %+v, want %s", th, tt.want)
 			}
@@ -217,7 +217,7 @@ func TestMainThemeSignals(t *testing.T) {
 	}
 	s := testScanner(t, `<meta name="generator" content="Canvas 5.9.3"><meta name="generator" content="WooFramework 6.2.0">`)
 	s.opts.DetectionMode = cli.ModePassive
-	if th := s.detectMainTheme(t.Context()); th.Version.Number != "5.9.3" {
+	if th := s.detectMainTheme(t.Context(), nil); th.Version.Number != "5.9.3" {
 		t.Errorf("WooFramework theme version = %+v", th.Version)
 	}
 }

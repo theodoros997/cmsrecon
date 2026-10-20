@@ -19,7 +19,7 @@ func sampleResult() *scan.Result {
 		Tool:          scan.Tool{Name: "cmsrecon", Version: "dev", UserAgent: "cmsrecon/dev"},
 		Target: scan.Target{
 			URL: "http://example.com/", EffectiveURL: "https://example.com/",
-			Redirects: []scan.Redirect{{From: "http://example.com/", To: "https://example.com/", Status: 301, Followed: true}},
+			Redirects: []scan.Redirect{{From: "http://example.com/", To: "https://example.com/", Status: 301, Followed: true, Reason: scan.RedirectInScope}},
 			Scope:     []string{"example.com"},
 		},
 		DetectionMode: "mixed",
@@ -82,7 +82,7 @@ func TestJSONShape(t *testing.T) {
 			"schema_version", "started_at", "stats", "status", "stop", "target", "tool", "version", "web_server", "wordpress"}},
 		{"tool", obj(doc["tool"]), []string{"name", "user_agent", "version"}},
 		{"target", obj(doc["target"]), []string{"effective_url", "redirects", "scope", "url"}},
-		{"redirect", first(obj(doc["target"])["redirects"]), []string{"followed", "from", "status", "to"}},
+		{"redirect", first(obj(doc["target"])["redirects"]), []string{"followed", "from", "reason", "status", "to"}},
 		{"web_server", obj(doc["web_server"]), []string{"family", "header"}},
 		{"wordpress", obj(doc["wordpress"]), []string{"content_url", "detected", "evidence"}},
 		{"evidence", first(obj(doc["wordpress"])["evidence"]), []string{"confidence", "method", "mode", "url", "value"}},
@@ -127,7 +127,7 @@ func TestCLIReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Effective URL: https://example.com/", "Redirect: http://example.com/ -> https://example.com/ (HTTP 301, followed)",
+		"Effective URL: https://example.com/", "Redirect: http://example.com/ -> https://example.com/ (HTTP 301, followed: in scope)",
 		"Interesting findings (2)", "XML-RPC is enabled", "HIGH", "Debug log exposed", "6.4.2 (confidence 60%)",
 		"child (confidence 70%)", "Parent theme: parent", "Not implemented yet", "1 request failed",
 		"Finished in 4.2s: 42 requests, 8.8 KB sent, 1.4 MB received",
@@ -146,6 +146,35 @@ func TestCLIReport(t *testing.T) {
 	}
 	if !strings.Contains(colored.String(), "\x1b[") {
 		t.Error("coloured report has no ANSI sequences")
+	}
+}
+
+func TestCLIWordPressNotDetected(t *testing.T) {
+	base := func() *scan.Result {
+		return &scan.Result{
+			Tool: scan.Tool{Name: "cmsrecon", Version: "dev"}, Target: scan.Target{URL: "http://example.com/", EffectiveURL: "http://example.com/"},
+			DetectionMode: "mixed", WordPress: &scan.WordPress{Detected: false},
+		}
+	}
+	stopped := base()
+	stopped.Status = scan.StatusStopped
+	stopped.Stop = &scan.Stop{Code: scan.StopNotWordPress, Message: "The site does not look like WordPress.", Hint: "Use --force to scan it anyway."}
+	forced := base()
+	forced.Status = scan.StatusCompleted
+
+	var buf bytes.Buffer
+	if err := WriteCLI(&buf, stopped, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "scanning anyway") {
+		t.Errorf("a stopped scan must not claim it is scanning anyway:\n%s", &buf)
+	}
+	buf.Reset()
+	if err := WriteCLI(&buf, forced, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "WordPress not detected; scanning anyway because of --force") {
+		t.Errorf("a forced scan should say so:\n%s", &buf)
 	}
 }
 

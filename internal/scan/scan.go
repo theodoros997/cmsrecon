@@ -115,16 +115,13 @@ func (s *Scanner) runChecks(ctx context.Context) {
 			}
 		})
 	}
+	// The theme's ?ver= signal needs the core version, so the theme comes
+	// second.
 	wg.Go(func() {
 		v := s.detectVersion(ctx)
+		t := s.detectMainTheme(ctx, v)
 		s.mu.Lock()
-		s.res.Version = v
-		s.mu.Unlock()
-	})
-	wg.Go(func() {
-		t := s.detectMainTheme(ctx)
-		s.mu.Lock()
-		s.res.MainTheme = t
+		s.res.Version, s.res.MainTheme = v, t
 		s.mu.Unlock()
 	})
 	wg.Wait()

@@ -18,6 +18,7 @@ const (
 	confThemeOtherURLs    = 10
 	confThemeWooFramework = 80
 	confThemeStyleVersion = 80
+	confThemeStyleVer     = 50
 )
 
 type themeCandidate struct {
@@ -27,8 +28,10 @@ type themeCandidate struct {
 
 // detectMainTheme finds the active theme from the homepage and the 404 page.
 // All its signals are passive; in aggressive or mixed mode the theme's
-// style.css is then read for its name, version and parent theme.
-func (s *Scanner) detectMainTheme(ctx context.Context) *Theme {
+// style.css is then read for its name, version and parent theme. core is
+// the detected WordPress version (may be nil): WordPress puts its own
+// version in ?ver= when a theme enqueues its stylesheet without one.
+func (s *Scanner) detectMainTheme(ctx context.Context, core *Version) *Theme {
 	if !s.passive() {
 		return nil
 	}
@@ -56,6 +59,7 @@ func (s *Scanner) detectMainTheme(ctx context.Context) *Theme {
 	}
 
 	var parentHint string
+	styleVer := map[string]Evidence{} // ?ver= on each theme's style.css link
 	for _, p := range s.pages() {
 		pageURL := p.resp.URL.String()
 		var child, parent string
@@ -78,8 +82,14 @@ func (s *Scanner) detectMainTheme(ctx context.Context) *Theme {
 		// the last theme style.css on the page counts as the main theme's.
 		var lastStyle *url.URL
 		for _, href := range p.linksTo("stylesheet") {
-			if slug, _ := slugOf(href); slug != "" && s.client.InScope(href) && path.Base(href.Path) == "style.css" {
-				lastStyle = href
+			slug, _ := slugOf(href)
+			if slug == "" || !s.client.InScope(href) || path.Base(href.Path) != "style.css" {
+				continue
+			}
+			lastStyle = href
+			if _, seen := styleVer[slug]; !seen {
+				styleVer[slug] = Evidence{Method: "?ver= on the theme's style.css", Mode: modePassive, URL: href.String(),
+					Value: href.Query().Get("ver"), Confidence: confThemeStyleVer}
 			}
 		}
 		if lastStyle != nil {
@@ -162,7 +172,7 @@ func (s *Scanner) detectMainTheme(ctx context.Context) *Theme {
 			parentEv = Evidence{Method: "Template header of the main theme", Mode: modeAggressive, URL: t.StyleURL, Value: template, Confidence: 100}
 		}
 	}
-	t.Version = combineVersions(versionEv)
+	t.Version = combineVersions(append(versionEv, themeStyleVer(styleVer, t.Slug, core)...))
 
 	if parentSlug != "" && parentSlug != t.Slug {
 		parent := s.newTheme(parentSlug, strings.TrimSuffix(t.Location, t.Slug+"/")+parentSlug+"/")
@@ -172,7 +182,7 @@ func (s *Scanner) detectMainTheme(ctx context.Context) *Theme {
 		if s.aggressive() {
 			pv, _ = s.readStyle(ctx, parent)
 		}
-		parent.Version = combineVersions(pv)
+		parent.Version = combineVersions(append(pv, themeStyleVer(styleVer, parentSlug, core)...))
 		t.Parent = parent
 	}
 	return t
@@ -274,4 +284,21 @@ func styleHeaderBlock(css []byte) []byte {
 		return css[:i]
 	}
 	return css
+}
+
+// themeStyleVer returns the ?ver= evidence of a theme's style.css link, unless
+// it is not a version or equals a WordPress core version candidate.
+func themeStyleVer(styleVer map[string]Evidence, slug string, core *Version) []Evidence {
+	e, ok := styleVer[slug]
+	if !ok || !validVersion(e.Value) {
+		return nil
+	}
+	if core != nil {
+		for _, c := range core.Candidates {
+			if c.Number == e.Value {
+				return nil
+			}
+		}
+	}
+	return []Evidence{e}
 }

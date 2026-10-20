@@ -288,7 +288,8 @@ const ScanUsage = `Usage:
 Target:
   -u, --url URL               Site to scan; http:// is assumed when no scheme is given
       --force                 Scan even if the site does not look like WordPress or returns 403
-      --follow-redirect       Scan wherever the homepage redirects to
+      --follow-redirect       Also follow a homepage redirect to an out-of-scope host
+                              (redirects within the scope are always followed)
       --scope DOMAINS         Extra in-scope domains, comma separated (e.g. cdn.example.com;
                               *.example.com covers every subdomain)
       --wp-auth USER:APP_PW   Admin Application Password: read the exact plugin and theme
@@ -332,7 +333,7 @@ Exit codes:
   1    cmsrecon failed, e.g. the report file could not be written
   2    Invalid command line
   3    A pre-flight check stopped the scan (unreachable, authentication required,
-       403, redirect, not WordPress, WordPress.com, unfinished install); the
-       report says why
+       403, out-of-scope redirect, not WordPress, WordPress.com, unfinished
+       install); the report says why
   130  Interrupted with Ctrl-C; the partial report is still written
 `

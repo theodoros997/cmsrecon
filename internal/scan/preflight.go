@@ -100,23 +100,28 @@ func (s *Scanner) fetchHomepage(ctx context.Context) (*httpclient.Response, bool
 			s.unfinishedInstall(loc)
 			return nil, false
 		}
+		// As in WPScan, a redirect within the scope (the target host or a
+		// --scope domain) is followed; others only with --follow-redirect.
 		next := normalizeBase(loc)
 		red := Redirect{From: u.String(), To: loc.String(), Status: res.StatusCode}
 		switch {
-		case schemeSwitch(u, next):
-			red.Followed = true
+		case s.client.InScope(next):
+			red.Followed, red.Reason = true, RedirectInScope
 		case s.opts.FollowRedirect:
-			red.Followed = true
+			red.Followed, red.Reason = true, RedirectFollowFlag
 			s.client.AddScope(next.Hostname())
+		default:
+			red.Reason = RedirectOutOfScope
 		}
 		s.res.Target.Redirects = append(s.res.Target.Redirects, red)
 		if !red.Followed {
-			s.stop(StopRedirect, fmt.Sprintf("The homepage redirects to %s.", loc),
-				fmt.Sprintf("Scan that URL instead (-u %s) or add --follow-redirect.", next))
+			s.stop(StopRedirect, fmt.Sprintf("The homepage redirects to %s, which is out of scope.", loc),
+				fmt.Sprintf("Use --follow-redirect, or --scope %s, to scan it.", next.Hostname()))
 			return nil, false
 		}
 		if seen[next.String()] || len(s.res.Target.Redirects) >= maxRedirects {
-			s.stop(StopRedirect, fmt.Sprintf("The homepage redirects in a loop (last: %s).", loc), "")
+			s.stop(StopRedirect, fmt.Sprintf("The homepage keeps redirecting (last: %s).", loc),
+				"The site may require a login or redirect every request; try the final URL with -u.")
 			return nil, false
 		}
 		seen[next.String()] = true
@@ -167,12 +172,6 @@ func normalizeBase(u *url.URL) *url.URL {
 		n.Path += "/"
 	}
 	return &n
-}
-
-// schemeSwitch reports whether b is a on the other scheme: same host, same
-// path, http<->https.
-func schemeSwitch(a, b *url.URL) bool {
-	return a.Scheme != b.Scheme && strings.EqualFold(a.Hostname(), b.Hostname()) && a.Path == b.Path
 }
 
 func detectServer(h http.Header) *WebServer {

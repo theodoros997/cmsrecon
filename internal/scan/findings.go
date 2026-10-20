@@ -391,13 +391,44 @@ func (s *Scanner) checkTmmDBMigrate(ctx context.Context) []Finding {
 	if res == nil || res.StatusCode != 200 {
 		return nil
 	}
-	ct := strings.ToLower(res.Header.Get("Content-Type"))
+	ct := res.Header.Get("Content-Type")
 	looksHTML := bytes.Contains(bytes.ToLower(res.Body), []byte("<html"))
-	if !bytes.HasPrefix(res.Body, []byte("PK\x03\x04")) && (!strings.Contains(ct, "zip") || looksHTML) {
+	zipMagic := bytes.HasPrefix(res.Body, []byte("PK\x03\x04")) || bytes.HasPrefix(res.Body, []byte("PK\x05\x06"))
+	if !zipMagic && (!strings.Contains(strings.ToLower(ct), "zip") || looksHTML) {
 		return nil
 	}
-	return finding(idTmmDBMigrate, "TMM DB Migrate database export exposed", SeverityHigh, u, direct(u, 100),
-		"The archive contains a database export")
+
+	// Only the first 512 bytes are read, so the size comes from
+	// Content-Length when the body was cut.
+	size := int64(-1)
+	if n, err := strconv.ParseInt(res.Header.Get("Content-Length"), 10, 64); err == nil {
+		size = n
+	} else if !res.Truncated {
+		size = int64(len(res.Body))
+	}
+	sizeText := "unknown size"
+	if size >= 0 {
+		sizeText = plural(int(size), "byte")
+	}
+	if ct == "" {
+		ct = "none"
+	}
+	entries := []string{"Size: " + sizeText, "Content-Type: " + ct}
+
+	// An empty zip is only its 22-byte end-of-central-directory record.
+	if (size >= 0 && size <= 22) || bytes.HasPrefix(res.Body, []byte("PK\x05\x06")) {
+		return finding(idTmmDBMigrate, "Empty archive at the TMM DB Migrate export path", SeverityLow, u, direct(u, 100),
+			append(entries, "The archive is empty; the plugin may have exported here before")...)
+	}
+	return finding(idTmmDBMigrate, "Archive downloadable at the TMM DB Migrate export path", SeverityHigh, u, direct(u, 100),
+		append(entries, "TMM DB Migrate writes database exports to this path; download it to confirm what it holds")...)
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // sqlRe matches the start of an SQL dump.
@@ -494,7 +525,7 @@ func (s *Scanner) checkFantastico(ctx context.Context) []Finding {
 		return nil
 	}
 	lines := strings.Split(strings.TrimSpace(string(res.Body)), "\n")
-	entries := []string{fmt.Sprintf("%d files listed", len(lines))}
+	entries := []string{plural(len(lines), "file") + " listed"}
 	for _, l := range lines[:min(len(lines), 10)] {
 		entries = append(entries, strings.TrimSpace(l))
 	}

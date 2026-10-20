@@ -88,20 +88,19 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 	p.good("Started: %s", r.StartedAt.Format("2006-01-02 15:04:05 MST"))
 	p.good("Detection mode: %s", r.DetectionMode)
 	for _, red := range r.Target.Redirects {
-		state := "not followed"
-		if red.Followed {
-			state = "followed"
-		}
-		p.info("Redirect: %s -> %s (HTTP %d, %s)", red.From, red.To, red.Status, state)
+		p.info("Redirect: %s -> %s (HTTP %d, %s)", red.From, red.To, red.Status, redirectState(red))
 	}
 	if r.WebServer != nil && r.WebServer.Header != "" {
 		p.good("Web server: %s", r.WebServer.Header)
 	}
 	if wp := r.WordPress; wp != nil {
-		if wp.Detected {
+		switch {
+		case wp.Detected:
 			p.good("WordPress detected")
-		} else {
-			p.bad("WordPress not detected (scanning anyway because of --force)")
+		case r.Stop == nil:
+			// Only --force lets a scan go on without WordPress; when it
+			// stops, the stop message says why.
+			p.bad("WordPress not detected; scanning anyway because of --force")
 		}
 		if o.Verbose {
 			p.evidence("Found by", "", wp.Evidence)
@@ -137,10 +136,25 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 	if r.Status == scan.StatusInterrupted {
 		p.bad("Scan interrupted: the results above are partial")
 	}
-	p.good("Finished in %s: %d requests, %s sent, %s received",
-		formatSeconds(r.Stats.ElapsedSeconds), r.Stats.Requests,
+	p.good("Finished in %s: %s, %s sent, %s received",
+		formatSeconds(r.Stats.ElapsedSeconds), plural(int(r.Stats.Requests), "request"),
 		formatBytes(r.Stats.BytesSent), formatBytes(r.Stats.BytesReceived))
 	return p.err
+}
+
+func redirectState(r scan.Redirect) string {
+	switch r.Reason {
+	case scan.RedirectInScope:
+		return "followed: in scope"
+	case scan.RedirectFollowFlag:
+		return "followed: --follow-redirect"
+	case scan.RedirectOutOfScope:
+		return "not followed: out of scope"
+	}
+	if r.Followed {
+		return "followed"
+	}
+	return "not followed"
 }
 
 func (p *printer) findings(fs []scan.Finding) {

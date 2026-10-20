@@ -103,8 +103,23 @@ func TestPassiveModeOnlyFetchesPagesItWouldReadAnyway(t *testing.T) {
 	if r.Version.Number != "6.4.2" {
 		t.Errorf("version = %+v", r.Version)
 	}
-	if r.MainTheme == nil || r.MainTheme.Slug != "lab-child" || r.MainTheme.Version.Number != "" {
-		t.Errorf("main theme = %+v (the version needs style.css, an aggressive request)", r.MainTheme)
+	// Without the style.css request, the version comes from ?ver= on the
+	// theme's stylesheet link.
+	if r.MainTheme == nil || r.MainTheme.Slug != "lab-child" || r.MainTheme.Version.Number != "1.0.3" ||
+		r.MainTheme.Version.Confidence != confThemeStyleVer || r.MainTheme.Name != "" {
+		t.Errorf("main theme = %+v, version %+v", r.MainTheme, r.MainTheme.Version)
+	}
+}
+
+func TestThemeStyleVerIgnoresTheCoreVersion(t *testing.T) {
+	// A theme that enqueues style.css without a version gets WordPress's own.
+	f := newFakeWP(t).addBaseSite()
+	f.fallback = http.NotFound
+	f.routes["/"] = respond(200, "text/html", `<meta name="generator" content="WordPress 6.4.2" />
+<link rel="stylesheet" href="{{URL}}wp-content/themes/plain/style.css?ver=6.4.2" />`)
+	r := runScan(t, options(f.URL(), cli.ModePassive))
+	if r.MainTheme == nil || r.MainTheme.Slug != "plain" || r.MainTheme.Version.Number != "" {
+		t.Errorf("main theme = %+v, version %+v", r.MainTheme, r.MainTheme.Version)
 	}
 }
 
@@ -217,32 +232,78 @@ func TestRedirects(t *testing.T) {
 		if r.Status != StatusCompleted || r.Target.EffectiveURL != tls.URL+"/" {
 			t.Fatalf("status = %s, effective URL = %s, stop = %+v", r.Status, r.Target.EffectiveURL, r.Stop)
 		}
-		if len(r.Target.Redirects) != 1 || !r.Target.Redirects[0].Followed {
+		if len(r.Target.Redirects) != 1 || !r.Target.Redirects[0].Followed || r.Target.Redirects[0].Reason != RedirectInScope {
 			t.Errorf("redirects = %+v", r.Target.Redirects)
 		}
 	})
 
-	t.Run("other redirect stops", func(t *testing.T) {
-		f := newFakeWP(t).addBaseSite()
-		f.routes["/"] = redirect(302, "{{URL}}blog/")
-		r := runScan(t, options(f.URL(), cli.ModeMixed))
-		if r.Status != StatusStopped || r.Stop.Code != StopRedirect || !strings.Contains(r.Stop.Hint, "--follow-redirect") {
-			t.Fatalf("status = %s, stop = %+v", r.Status, r.Stop)
-		}
-		if len(r.Target.Redirects) != 1 || r.Target.Redirects[0].Followed {
-			t.Errorf("redirects = %+v", r.Target.Redirects)
-		}
-	})
-
-	t.Run("other redirect is followed with --follow-redirect", func(t *testing.T) {
+	t.Run("another path on the target host is in scope", func(t *testing.T) {
 		f := newFakeWP(t).addBaseSite()
 		f.routes["/"] = redirect(302, "{{URL}}blog/")
 		f.routes["/blog/"] = homepage
-		o := options(f.URL(), cli.ModePassive)
-		o.FollowRedirect = true
-		r := runScan(t, o)
+		r := runScan(t, options(f.URL(), cli.ModePassive))
 		if r.Status != StatusCompleted || !strings.HasSuffix(r.Target.EffectiveURL, "/blog/") {
 			t.Fatalf("status = %s, effective URL = %s, stop = %+v", r.Status, r.Target.EffectiveURL, r.Stop)
+		}
+		if r.Target.Redirects[0].Reason != RedirectInScope {
+			t.Errorf("redirects = %+v", r.Target.Redirects)
+		}
+	})
+
+	// Off-host redirects go from 127.0.0.1 to localhost: another host name
+	// for the same machine.
+	offHost := func(t *testing.T) (target string, other *fakeWP) {
+		other = newFakeWP(t).addBaseSite()
+		f := newFakeWP(t)
+		f.fallback = redirect(301, strings.Replace(other.URL(), "127.0.0.1", "localhost", 1))
+		return f.URL(), other
+	}
+
+	t.Run("an out-of-scope redirect stops", func(t *testing.T) {
+		target, other := offHost(t)
+		r := runScan(t, options(target, cli.ModeMixed))
+		if r.Status != StatusStopped || r.Stop.Code != StopRedirect {
+			t.Fatalf("status = %s, stop = %+v", r.Status, r.Stop)
+		}
+		for _, want := range []string{"--follow-redirect", "--scope localhost"} {
+			if !strings.Contains(r.Stop.Hint, want) {
+				t.Errorf("hint %q does not mention %s", r.Stop.Hint, want)
+			}
+		}
+		if red := r.Target.Redirects; len(red) != 1 || red[0].Followed || red[0].Reason != RedirectOutOfScope {
+			t.Errorf("redirects = %+v", red)
+		}
+		if n := len(other.requested()); n != 0 {
+			t.Errorf("the out-of-scope host got %d requests", n)
+		}
+	})
+
+	t.Run("a redirect to a --scope host is followed", func(t *testing.T) {
+		target, _ := offHost(t)
+		o := options(target, cli.ModePassive)
+		o.Scope = []string{"localhost"}
+		r := runScan(t, o)
+		if r.Status != StatusCompleted || !strings.Contains(r.Target.EffectiveURL, "//localhost:") {
+			t.Fatalf("status = %s, effective URL = %s, stop = %+v", r.Status, r.Target.EffectiveURL, r.Stop)
+		}
+		if red := r.Target.Redirects; len(red) != 1 || red[0].Reason != RedirectInScope {
+			t.Errorf("redirects = %+v", red)
+		}
+	})
+
+	t.Run("an out-of-scope redirect is followed with --follow-redirect", func(t *testing.T) {
+		target, _ := offHost(t)
+		o := options(target, cli.ModePassive)
+		o.FollowRedirect = true
+		r := runScan(t, o)
+		if r.Status != StatusCompleted || !strings.Contains(r.Target.EffectiveURL, "//localhost:") {
+			t.Fatalf("status = %s, effective URL = %s, stop = %+v", r.Status, r.Target.EffectiveURL, r.Stop)
+		}
+		if red := r.Target.Redirects; len(red) != 1 || red[0].Reason != RedirectFollowFlag {
+			t.Errorf("redirects = %+v", red)
+		}
+		if !slices.Contains(r.Target.Scope, "localhost") {
+			t.Errorf("the followed host should join the scope: %v", r.Target.Scope)
 		}
 	})
 
@@ -385,4 +446,37 @@ func TestFullPathDisclosureTriesSeveralFiles(t *testing.T) {
 			t.Error("no path was disclosed")
 		}
 	})
+}
+
+func TestTmmDBMigrateReportsWhatWasSeen(t *testing.T) {
+	tests := []struct {
+		name, body   string
+		wantSeverity string
+		wantEntries  []string
+	}{
+		{"archive with content", "PK\x03\x04" + strings.Repeat("x", 1000), SeverityHigh,
+			[]string{"Size: 1004 bytes", "Content-Type: application/zip"}},
+		// An empty zip is just the 22-byte end-of-central-directory record.
+		{"empty archive", "PK\x05\x06" + strings.Repeat("\x00", 18), SeverityLow,
+			[]string{"Size: 22 bytes", "Content-Type: application/zip", "The archive is empty; the plugin may have exported here before"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeWP(t).addBaseSite()
+			f.routes["/wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip"] = respond(200, "application/zip", tt.body)
+			r := runScan(t, options(f.URL(), cli.ModeAggressive))
+			fi := findingByID(r, idTmmDBMigrate)
+			if fi == nil || fi.Severity != tt.wantSeverity {
+				t.Fatalf("finding = %+v", fi)
+			}
+			for _, want := range tt.wantEntries {
+				if !slices.Contains(fi.Entries, want) {
+					t.Errorf("entries %q lack %q", fi.Entries, want)
+				}
+			}
+			if strings.Contains(fi.Title, "database export exposed") {
+				t.Errorf("title %q claims more than was observed", fi.Title)
+			}
+		})
+	}
 }

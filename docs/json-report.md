@@ -32,7 +32,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 |---|---|---|
 | `url` | string | The URL from the command line, normalized (scheme added, path ending in `/`) |
 | `effective_url` | string | The URL scanned after followed redirects |
-| `redirects` | list | Homepage redirects seen during pre-flight: `from`, `to`, `status` (HTTP code) and `followed` (boolean) |
+| `redirects` | list | Homepage redirects seen during pre-flight: `from`, `to`, `status` (HTTP code), `followed` (boolean) and `reason`: `in_scope` (followed: the target host or a `--scope` domain), `follow_redirect` (followed because of `--follow-redirect`) or `out_of_scope` (not followed; the scan stopped) |
 | `scope` | string list | In-scope hosts; `*.example.com` entries cover subdomains |
 
 ## Stop
@@ -49,7 +49,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `http_auth_required` | HTTP 401; use `--http-auth`, or the credentials given were rejected |
 | `proxy_auth_required` | HTTP 407 from the proxy |
 | `forbidden` | HTTP 403 on the homepage without `--force` |
-| `redirect` | The homepage redirects somewhere other than the same URL on the other scheme, without `--follow-redirect`, or redirects in a loop |
+| `redirect` | The homepage redirects to an out-of-scope host without `--follow-redirect`, or keeps redirecting (a loop or more than 10 redirects) |
 | `not_wordpress` | No WordPress signal, without `--force` |
 | `wordpress_com` | The site is hosted on WordPress.com |
 | `unfinished_install` | The homepage redirects to the installer; the `unfinished-install` finding has the details |
@@ -95,7 +95,7 @@ One signal behind a finding, version or theme.
 | `mu-plugins` | info; low with directory listing | |
 | `registration` | low | |
 | `upload-directory-listing` | medium | |
-| `tmm-db-migrate` | high | |
+| `tmm-db-migrate` | high; low for an empty archive | |
 | `upload-sql-dump` | high | |
 | `emergency-password-reset` | high | |
 | `wp-cron` | info | |

@@ -194,7 +194,7 @@ func (f *fakeWP) addExposures() *fakeWP {
 	f.routes["/wp-login.php?action=register"] = respond(200, "text/html", `<form name="registerform" id="registerform" action="wp-login.php?action=register" method="post">`)
 	f.routes["/wp-content/uploads/"] = respond(200, "text/html",
 		`<html><head><title>Index of /wp-content/uploads</title></head><body><h1>Index of /wp-content/uploads</h1><table><tr><th><a href="?C=N;O=D">Name</a></th></tr><tr><td><a href="/wp-content/">Parent Directory</a></td></tr><tr><td><a href="2026/">2026/</a></td></tr><tr><td><a href="dump.sql">dump.sql</a></td></tr></table></body></html>`)
-	f.routes["/wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip"] = respond(200, "application/zip", "PK\x03\x04\x14\x00\x00\x00")
+	f.routes["/wp-content/uploads/tmm_db_migrate/tmm_db_migrate.zip"] = respond(200, "application/zip", "PK\x03\x04\x14\x00\x00\x00"+strings.Repeat("x", 600))
 	f.routes["/wp-content/uploads/dump.sql"] = respond(200, "application/sql", "-- MySQL dump 10.13  Distrib 8.0.36\n--\nCREATE TABLE `wp_users` (\n")
 	f.routes["/wp-content/mu-plugins/"] = respond(403, "text/html", "<h1>Forbidden</h1>")
 	f.routes["/emergency.php"] = respond(200, "text/html", "<title>WordPress Emergency PassWord Reset</title><form>")

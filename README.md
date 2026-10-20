@@ -47,7 +47,7 @@ The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in t
 | 0 | The scan completed |
 | 1 | cmsrecon failed, e.g. the report file could not be written |
 | 2 | Invalid command line |
-| 3 | A pre-flight check stopped the scan: unreachable, authentication required, 403, a redirect that needs `--follow-redirect`, not WordPress, hosted on WordPress.com, or an unfinished install. The report says why |
+| 3 | A pre-flight check stopped the scan: unreachable, authentication required, 403, a redirect to an out-of-scope host, not WordPress, hosted on WordPress.com, or an unfinished install. The report says why |
 | 130 | Interrupted with Ctrl-C; the partial report is still written |
 
 ## What it checks
