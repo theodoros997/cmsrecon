@@ -127,3 +127,30 @@ func TestParseScanHelp(t *testing.T) {
 		t.Error("help output is missing the options list")
 	}
 }
+
+func TestParseUpdate(t *testing.T) {
+	t.Setenv("WORDFENCE_API_KEY", " env-key ")
+	o, err := ParseUpdate([]string{"--data-dir", "/tmp/x"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.DataDir != "/tmp/x" || o.WordfenceKey != "env-key" || len(o.Sources) != len(UpdateSources) || o.Timeout <= 0 {
+		t.Errorf("defaults = %+v", o)
+	}
+	o, err = ParseUpdate([]string{"--sources", "cve, retirejs,cve", "--wordfence-key", "flag-key", "--proxy", "http://127.0.0.1:8080"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(o.Sources, ",") != "cve,retirejs" || o.WordfenceKey != "flag-key" || o.Proxy == nil {
+		t.Errorf("options = %+v", o)
+	}
+	for _, args := range [][]string{{"--sources", "nvd"}, {"--sources", ","}, {"extra"}, {"--timeout", "0s"}, {"--proxy", "ftp://x"}} {
+		if _, err := ParseUpdate(args, io.Discard); err == nil {
+			t.Errorf("%v: want an error", args)
+		}
+	}
+	var help strings.Builder
+	if _, err := ParseUpdate([]string{"-h"}, &help); !errors.Is(err, flag.ErrHelp) || !strings.Contains(help.String(), "WORDFENCE_API_KEY") {
+		t.Errorf("help: %v\n%s", err, help.String())
+	}
+}

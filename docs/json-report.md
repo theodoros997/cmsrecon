@@ -20,9 +20,16 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `web_server` | object or null | `header`: the homepage's `Server` header (empty when absent); `family`: `apache`, `nginx`, `iis` or `unknown` |
 | `wordpress` | object or null | `detected` (boolean; `false` only when `--force` scanned anyway), `content_url` (the wp-content directory, omitted when it was not seen), `evidence` ([Evidence](#evidence) list) |
 | `interesting_findings` | [Finding](#finding) list | In the order of the table below |
-| `version` | [Version](#version) or null | WordPress core version; null when the scan stopped first |
-| `main_theme` | [Theme](#theme) or null | Null when not detected, in aggressive mode (its signals are passive) or when the scan stopped first |
-| `notices` | string list | Things the user should know, e.g. enumerations that are not implemented yet |
+| `version` | [Version](#version) or null | WordPress core version; null when the scan stopped first. `latest` and `outdated` are set when the WordPress.org data is downloaded |
+| `core_vulnerabilities` | [Vulnerability](#vulnerability) list | Core vulnerabilities that apply to `version`; empty when the version is unknown |
+| `main_theme` | [Theme](#theme) or null | Null when not detected, in aggressive mode (its signals are passive) or when the scan stopped first. With `--wp-auth`, the active theme |
+| `themes` | [Theme](#theme) list | The other installed themes found, without the main theme and its parent; sorted by slug |
+| `plugins` | [Plugin](#plugin) list | Sorted by slug |
+| `js_libraries` | [JSLibrary](#jslibrary) list | Sorted by name |
+| `users` | [User](#user) list | Sorted by ID, then name; empty unless users were enumerated (`-e u`) |
+| `vulnerability_data` | object or null | The data the scan matched against: `directory` (the `--data-dir`) and `sources`, a list of `name` (`wordfence`, `cve`, `wporg` or `retirejs`), `updated_at` (RFC 3339) and `entries` (vulnerabilities, slugs or libraries). `sources` is empty before `cmsrecon update` |
+| `vulnerability_counts` | object | `confirmed`, `likely` and `possible`: the vulnerabilities of every component by verdict |
+| `notices` | string list | Things the user should know, e.g. missing or stale vulnerability data, or a list that replaced another |
 | `errors` | list | Requests that failed (`url`, `error`). A failed request does not stop the scan; the check that needed it reports nothing |
 | `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead) and `elapsed_seconds` |
 
@@ -102,8 +109,11 @@ One signal behind a finding, version or theme.
 | `php-disabled` | high | `wp_version` (string, from the leaked `version.php`) |
 | `fantastico-fileslist` | medium | |
 | `search-replace-db2` | high | |
+| `config-backup` | critical when it defines `DB_PASSWORD`, high otherwise | `constants` (string list: the WordPress constants the copy defines; their values are never reported). One finding per file |
+| `db-export` | high for SQL, medium for an archive | One finding per file |
+| `backup-folder` | high; low for an empty listing | One finding per folder |
 
-[checks.md](checks.md#interesting-findings) describes what each check requests and matches.
+The last three come from `-e cb`, `dbe` and `bf`. [checks.md](checks.md#interesting-findings) describes what each check requests and matches.
 
 ## Version
 
@@ -111,6 +121,8 @@ One signal behind a finding, version or theme.
 |---|---|---|
 | `number` | string | The detected version; empty when unknown |
 | `confidence` | integer | Combined confidence of `number`; 0 when unknown |
+| `latest` | string | The latest release according to the WordPress.org data; omitted when unknown |
+| `outdated` | boolean | `number` is older than `latest`; omitted when false |
 | `candidates` | list | Every version number seen (`number`, `confidence`), most likely first. The first one is `number` when its confidence is at least 40 |
 | `evidence` | [Evidence](#evidence) list | Every signal, with the version it reported in `value` |
 
@@ -125,7 +137,59 @@ One signal behind a finding, version or theme.
 | `name`, `theme_uri`, `author`, `author_uri` | string | From the `style.css` header; omitted when not read (passive mode) or empty |
 | `version` | [Version](#version) | The theme version; `number` is empty when unknown |
 | `parent` | Theme | The parent of a child theme; omitted otherwise. Its own `parent` is always omitted |
-| `evidence` | [Evidence](#evidence) list | Why this theme was chosen |
+| `evidence` | [Evidence](#evidence) list | Why this theme was chosen (main theme), or how it was found (other themes) |
+| `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first |
+
+## Plugin
+
+| Field | Type | Description |
+|---|---|---|
+| `slug` | string | Directory name under `plugins/` |
+| `name` | string | From its readme; omitted when not read |
+| `location` | string | The plugin directory URL |
+| `readme_url` | string | The readme that was read; omitted when none was found |
+| `confidence` | integer | Combined confidence that the plugin is installed |
+| `version` | [Version](#version) | `number` is empty when unknown |
+| `evidence` | [Evidence](#evidence) list | How it was found, strongest first |
+| `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first |
+
+## JSLibrary
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | The library, named as in the retire.js repository (`jquery`, `jquery-ui`, `bootstrap`, `moment.js`, …) |
+| `version` | [Version](#version) | `number` is empty when unknown |
+| `urls` | string list | Where it was seen, at most five |
+| `vulnerabilities` | [Vulnerability](#vulnerability) list | Only matched when the version is known |
+
+## User
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | integer | The user ID; omitted when unknown |
+| `username` | string | The login slug from author URLs, the REST API or sitemaps, usually the login name; omitted when only the display name was seen |
+| `display_name` | string | Omitted when unknown |
+| `confidence` | integer | Combined confidence |
+| `evidence` | [Evidence](#evidence) list | How it was found |
+
+## Vulnerability
+
+| Field | Type | Description |
+|---|---|---|
+| `title` | string | |
+| `verdict` | string | `confirmed`, `likely` or `possible`; see [checks.md](checks.md#vulnerabilities) |
+| `severity` | string | `critical`, `high`, `medium` or `low`; omitted when the source does not rate it |
+| `cvss` | number | CVSS base score; omitted when unknown |
+| `cvss_vector` | string | Omitted when unknown |
+| `cve` | string list | CVE IDs |
+| `cwe` | string | e.g. `CWE-434 Unrestricted Upload of File with Dangerous Type`; omitted when unknown |
+| `affected_versions` | string list | The primary source's ranges, for people: `<= 5.3.1`, `4.2 - 4.2.34`, `>= 9.0.0, < 9.1.2`, `all versions` |
+| `fixed_in` | string | The first fixed version above the detected one, or the lowest fixed version; omitted when none is known |
+| `unfixed` | boolean | The source says no fix exists; omitted when false |
+| `published` | string | `YYYY-MM-DD`; omitted when unknown |
+| `sources` | string list | `wordfence`, `cve` or `retirejs`, primary first |
+| `note` | string | Why the verdict is not `confirmed`, e.g. the sources disagree on the affected versions; omitted otherwise |
+| `references` | string list | Advisory and patch links |
 
 ## Example
 
@@ -180,6 +244,7 @@ Abridged output of a mixed-mode scan:
       { "method": "Meta generator", "mode": "passive", "url": "https://blog.example.com/", "value": "6.4.2", "confidence": 60 }
     ]
   },
+  "core_vulnerabilities": [],
   "main_theme": {
     "slug": "twentytwentyfour",
     "location": "https://blog.example.com/wp-content/themes/twentytwentyfour/",
@@ -198,9 +263,68 @@ Abridged output of a mixed-mode scan:
     "evidence": [
       { "method": "Theme URLs in the homepage", "mode": "passive", "url": "https://blog.example.com/", "value": "twentytwentyfour", "confidence": 40 },
       { "method": "Theme URLs in the 404 page", "mode": "passive", "url": "https://blog.example.com/3f9c0a1b2c4d5e6f/", "value": "twentytwentyfour", "confidence": 40 }
+    ],
+    "vulnerabilities": []
+  },
+  "themes": [],
+  "plugins": [
+    {
+      "slug": "contact-form-7",
+      "name": "Contact Form 7",
+      "location": "https://blog.example.com/wp-content/plugins/contact-form-7/",
+      "readme_url": "https://blog.example.com/wp-content/plugins/contact-form-7/readme.txt",
+      "confidence": 100,
+      "version": {
+        "number": "5.3.1",
+        "confidence": 92,
+        "latest": "6.1",
+        "outdated": true,
+        "candidates": [{ "number": "5.3.1", "confidence": 92 }],
+        "evidence": [
+          { "method": "readme.txt Stable tag", "mode": "aggressive", "url": "https://blog.example.com/wp-content/plugins/contact-form-7/readme.txt", "value": "5.3.1", "confidence": 80 },
+          { "method": "readme.txt changelog", "mode": "aggressive", "url": "https://blog.example.com/wp-content/plugins/contact-form-7/readme.txt", "value": "5.3.1", "confidence": 60 }
+        ]
+      },
+      "evidence": [
+        { "method": "readme.txt", "mode": "aggressive", "url": "https://blog.example.com/wp-content/plugins/contact-form-7/readme.txt", "confidence": 100 },
+        { "method": "REST API namespace", "mode": "passive", "url": "https://blog.example.com/wp-json/", "value": "contact-form-7/v1", "confidence": 90 }
+      ],
+      "vulnerabilities": [
+        {
+          "title": "Contact Form 7 <= 5.3.1 - Unrestricted File Upload",
+          "verdict": "confirmed",
+          "severity": "critical",
+          "cvss": 10,
+          "cve": ["CVE-2020-35489"],
+          "affected_versions": ["<= 5.3.1"],
+          "fixed_in": "5.3.2",
+          "published": "2020-12-17",
+          "sources": ["wordfence", "cve"],
+          "references": ["https://www.wordfence.com/threat-intel/vulnerabilities/id/…"]
+        }
+      ]
+    }
+  ],
+  "js_libraries": [
+    {
+      "name": "jquery",
+      "version": { "number": "3.5.1", "confidence": 80, "candidates": [{ "number": "3.5.1", "confidence": 80 }], "evidence": [] },
+      "urls": ["https://blog.example.com/wp-includes/js/jquery/jquery.min.js?ver=3.5.1"],
+      "vulnerabilities": []
+    }
+  ],
+  "users": [
+    { "id": 1, "username": "admin", "display_name": "Site Admin", "confidence": 100, "evidence": [] }
+  ],
+  "vulnerability_data": {
+    "directory": "/home/user/.cache/cmsrecon",
+    "sources": [
+      { "name": "wordfence", "updated_at": "2026-10-20T08:00:00Z", "entries": 31245 },
+      { "name": "cve", "updated_at": "2026-10-20T08:02:00Z", "entries": 18432 }
     ]
   },
-  "notices": ["Not implemented yet, skipped: vulnerable plugins (vp), …"],
+  "vulnerability_counts": { "confirmed": 1, "likely": 0, "possible": 0 },
+  "notices": [],
   "errors": [],
   "stats": { "requests": 41, "bytes_sent": 10240, "bytes_received": 352000, "elapsed_seconds": 3.912 }
 }

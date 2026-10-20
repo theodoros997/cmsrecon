@@ -64,7 +64,7 @@ Hello Dolly (`/wp-content/plugins/hello.php`, a single-file plugin) is optional:
 
 Display names are not usernames and should not be reported as such.
 
-### Vulnerabilities (once matching lands)
+### Vulnerabilities
 
 | Component | Example CVE | Fixed in |
 |---|---|---|

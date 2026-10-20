@@ -11,13 +11,16 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"text/tabwriter"
+	"time"
 
 	"github.com/theodoros997/cmsrecon/internal/buildinfo"
 	"github.com/theodoros997/cmsrecon/internal/cli"
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
 	"github.com/theodoros997/cmsrecon/internal/report"
 	"github.com/theodoros997/cmsrecon/internal/scan"
+	"github.com/theodoros997/cmsrecon/internal/update"
 )
 
 // Exit codes, documented in the scan usage and the README.
@@ -53,8 +56,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "scan":
 		return runScan(args[1:], stdout, stderr)
 	case "update":
-		fmt.Fprintln(stderr, "update: the vulnerability database is not implemented yet")
-		return exitError
+		return runUpdate(args[1:], stdout, stderr)
 	case "version", "-version", "--version":
 		fmt.Fprintln(stdout, buildinfo.String())
 		return exitOK
@@ -78,9 +80,8 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\nRun \"cmsrecon scan -h\" for usage.\n", err)
 		return exitUsage
 	}
-	notices := notImplemented(opts)
 	if opts.DryRun {
-		printPlan(stdout, opts, notices)
+		printPlan(stdout, opts)
 		return exitOK
 	}
 
@@ -100,18 +101,27 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
-	// The CLI report on stdout carries the notices; anywhere else the user
-	// would not see them, so print them now.
 	toTerminal := opts.Format == cli.FormatCLI && opts.Output == ""
-	if !toTerminal {
-		for _, n := range notices {
-			fmt.Fprintln(stderr, "notice:", n)
-		}
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	res := scan.New(opts, client).Run(ctx, notices)
+	scanner := scan.New(opts, client)
+	var prog *progress
+	// The progress line needs a terminal that understands escape codes.
+	if report.ColorEnabled(stderr) {
+		prog = &progress{w: stderr}
+		scanner.Progress = prog.update
+	}
+	res := scanner.Run(ctx, nil)
+	prog.clear()
+
+	// The CLI report on stdout carries the notices; anywhere else the user
+	// would not see them, so print them now.
+	if !toTerminal {
+		for _, n := range res.Notices {
+			fmt.Fprintln(stderr, "notice:", n)
+		}
+	}
 
 	if opts.Format == cli.FormatJSON {
 		err = report.WriteJSON(out, res)
@@ -141,51 +151,50 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// notImplemented returns one notice listing the requested enumerations that
-// this version cannot run yet, or nothing.
-func notImplemented(o *cli.ScanOptions) []string {
-	var skipped []string
-	e := o.Enumerate
-	if o.WPAuth != nil {
-		skipped = append(skipped, "REST API inventory (--wp-auth)")
-	} else {
-		if e.Plugins != cli.ItemsNone {
-			skipped = append(skipped, fmt.Sprintf("%s plugins (%sp)", e.Plugins, itemCode(e.Plugins)))
+func runUpdate(args []string, stdout, stderr io.Writer) int {
+	o, err := cli.ParseUpdate(args, stdout)
+	if errors.Is(err, flag.ErrHelp) {
+		return exitOK
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\nRun \"cmsrecon update -h\" for usage.\n", err)
+		return exitUsage
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	fmt.Fprintf(stderr, "Updating the data in %s\n", o.DataDir)
+	results, err := update.Run(ctx, update.Options{
+		DataDir:      o.DataDir,
+		Sources:      o.Sources,
+		WordfenceKey: o.WordfenceKey,
+		GitHubToken:  os.Getenv("GITHUB_TOKEN"),
+		Proxy:        o.Proxy,
+		Timeout:      o.Timeout,
+		Endpoints:    update.DefaultEndpoints,
+		Log:          stderr,
+	})
+	for _, r := range results {
+		switch {
+		case r.Err != nil:
+			fmt.Fprintf(stdout, "[!] %s failed: %v\n", update.Label(r.Source), r.Err)
+		case r.Skipped:
+			fmt.Fprintf(stdout, "[i] %s skipped: %s\n", update.Label(r.Source), r.Summary)
+		default:
+			fmt.Fprintf(stdout, "[+] %s: %s\n", update.Label(r.Source), r.Summary)
 		}
-		if e.Themes != cli.ItemsNone {
-			skipped = append(skipped, fmt.Sprintf("%s themes (%st)", e.Themes, itemCode(e.Themes)))
-		}
 	}
-	if e.ConfigBackups {
-		skipped = append(skipped, "config backups (cb)")
+	switch {
+	case ctx.Err() != nil:
+		fmt.Fprintln(stderr, "Interrupted; the sources not finished keep their previous data.")
+		return exitInterrupted
+	case err != nil:
+		return exitError
 	}
-	if e.DBExports {
-		skipped = append(skipped, "database exports (dbe)")
-	}
-	if e.BackupFolders {
-		skipped = append(skipped, "backup folders (bf)")
-	}
-	if e.Users != nil {
-		skipped = append(skipped, fmt.Sprintf("users (u%s)", e.Users))
-	}
-	if len(skipped) == 0 {
-		return nil
-	}
-	return []string{"Not implemented yet, skipped: " + strings.Join(skipped, ", ") + "."}
-}
-
-func itemCode(s cli.ItemSet) string {
-	switch s {
-	case cli.ItemsVulnerable:
-		return "v"
-	case cli.ItemsAll:
-		return "a"
-	}
-	return ""
+	return exitOK
 }
 
 // printPlan describes what a scan with these options would do.
-func printPlan(w io.Writer, o *cli.ScanOptions, notices []string) {
+func printPlan(w io.Writer, o *cli.ScanOptions) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	row := func(k, v string) { fmt.Fprintf(tw, "%s:\t%s\n", k, v) }
 
@@ -220,10 +229,8 @@ func printPlan(w io.Writer, o *cli.ScanOptions, notices []string) {
 		dest = o.Output
 	}
 	row("Report", fmt.Sprintf("%s to %s", o.Format, dest))
+	row("Data", o.DataDir)
 	tw.Flush()
-	for _, n := range notices {
-		fmt.Fprintln(w, "\nNote:", n)
-	}
 }
 
 func yesNo(b bool) string {
@@ -231,4 +238,35 @@ func yesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// progress shows how far brute-force runs are on one terminal line.
+type progress struct {
+	w     io.Writer
+	mu    sync.Mutex
+	last  time.Time
+	shown bool
+}
+
+func (p *progress) update(label string, done, total int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if done < total && time.Since(p.last) < 200*time.Millisecond {
+		return
+	}
+	p.last = time.Now()
+	p.shown = true
+	fmt.Fprintf(p.w, "\r\x1b[K[i] %s: %d/%d", label, done, total)
+}
+
+// clear removes the progress line; it is safe on a nil progress.
+func (p *progress) clear() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.shown {
+		fmt.Fprint(p.w, "\r\x1b[K")
+	}
 }
