@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,38 @@ func TestDetectionModesAndCrawl(t *testing.T) {
 		t.Errorf("options = %+v", o)
 	}
 	for _, args := range [][]string{{"--plugins-detection", "loud"}, {"--themes-detection", ""}, {"--crawl", "101"}} {
+		if _, err := ParseScan(append([]string{"-u", "example.com"}, args...), io.Discard); err == nil {
+			t.Errorf("%v: want an error", args)
+		}
+	}
+}
+
+func TestWPScanStyleOptions(t *testing.T) {
+	o, err := ParseScan([]string{"-u", "example.com", "--stealthy", "--possible"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.RandomUserAgent || o.DetectionMode != ModePassive || !o.ShowPossible {
+		t.Errorf("--stealthy --possible = %+v", o)
+	}
+
+	list := t.TempDir() + "/plugins.txt"
+	if err := os.WriteFile(list, []byte("# plugins to check\nakismet\n  contact-form-7  # forms\n\nAkismet\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o, err = ParseScan([]string{"-u", "example.com", "--plugins-list", list, "--themes-list", "astra, twentytwenty,",
+		"--wp-content-dir", "assets", "--wp-plugins-dir", "https://cdn.example.com/ext"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(o.PluginsList, " ") != "akismet contact-form-7" || strings.Join(o.ThemesList, " ") != "astra twentytwenty" {
+		t.Errorf("lists = %q, %q", o.PluginsList, o.ThemesList)
+	}
+	if o.ContentDir != "assets" || o.PluginsDir != "https://cdn.example.com/ext" {
+		t.Errorf("dirs = %q, %q", o.ContentDir, o.PluginsDir)
+	}
+
+	for _, args := range [][]string{{"--plugins-list", "../../etc"}, {"--themes-list", "a b"}, {"--plugins-list", " , ,"}, {"--plugins-list", "%2e%2e"}} {
 		if _, err := ParseScan(append([]string{"-u", "example.com"}, args...), io.Discard); err == nil {
 			t.Errorf("%v: want an error", args)
 		}

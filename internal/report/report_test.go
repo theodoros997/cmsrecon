@@ -47,7 +47,8 @@ func sampleResult() *scan.Result {
 		},
 		Themes: []*scan.Theme{{
 			Slug: "twentytwenty", Location: "https://example.com/wp-content/themes/twentytwenty/", StyleURL: "https://example.com/wp-content/themes/twentytwenty/style.css",
-			Confidence: 80, Version: &scan.Version{Candidates: []scan.Candidate{}, Evidence: []scan.Evidence{}}, Evidence: ev,
+			Confidence: 80, Version: &scan.Version{Latest: "2.8", Candidates: []scan.Candidate{}, Evidence: []scan.Evidence{}}, Evidence: ev,
+			Possible: &scan.PossibleVulns{Count: 3, Critical: 1, FixedIn: "2.5"},
 		}},
 		Plugins: []*scan.Plugin{{
 			Slug: "contact-form-7", Name: "Contact Form 7", Location: "https://example.com/wp-content/plugins/contact-form-7/",
@@ -61,10 +62,10 @@ func sampleResult() *scan.Result {
 				CVSS: 9.8, CVE: []string{"CVE-2020-35489"}, CWE: "CWE-434", Affected: []string{"<= 5.3.1"}, FixedIn: "5.3.2",
 				Published: "2020-12-17", Sources: []string{"wordfence", "cve"},
 				References: []string{"https://www.wordfence.com/threat-intel/vulnerabilities/id/a1", "https://contactform7.com/"},
-			}, {
-				Title: "Contact Form 7 < 5.0 - Old XSS", Verdict: scan.VerdictPossible, Severity: scan.SeverityMedium,
-				Affected: []string{"< 5.0"}, Sources: []string{"cve"}, Note: "The sources disagree",
 			}},
+			Possible:    &scan.PossibleVulns{Count: 1, FixedIn: "5.0"},
+			LastUpdated: "2026-09-30",
+			Warnings:    []string{"Directory listing is enabled: https://example.com/wp-content/plugins/contact-form-7/ (12 entries)"},
 		}},
 		JSLibraries: []*scan.JSLibrary{{
 			Name: "jquery", URLs: []string{"https://example.com/wp-includes/js/jquery/jquery.min.js?ver=1.12.4"},
@@ -79,7 +80,7 @@ func sampleResult() *scan.Result {
 		VulnerabilityData: &scan.DataInfo{Directory: "/data", Sources: []scan.DataSource{
 			{Name: "wordfence", UpdatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC), Entries: 30000},
 		}},
-		VulnerabilityCounts: scan.VulnCounts{Confirmed: 2, Possible: 1},
+		VulnerabilityCounts: scan.VulnCounts{Confirmed: 2, Possible: 4},
 		CoreVulnerabilities: []scan.Vulnerability{},
 		Notices:             []string{"The vulnerability data is 9 days old: run \"cmsrecon update\" to refresh it."},
 		Errors:              []scan.RequestError{{URL: "https://example.com/feed/", Error: "timeout"}},
@@ -127,8 +128,9 @@ func TestJSONShape(t *testing.T) {
 		{"xmlrpc data", obj(first(doc["interesting_findings"])["data"]), []string{"methods", "pingback_ping", "system_multicall"}},
 		{"version", obj(doc["version"]), []string{"candidates", "confidence", "evidence", "number"}},
 		{"candidate", first(obj(doc["version"])["candidates"]), []string{"confidence", "number"}},
-		{"main_theme", obj(doc["main_theme"]), []string{"confidence", "evidence", "location", "name", "parent", "slug", "style_url", "version", "vulnerabilities"}},
-		{"plugin", first(doc["plugins"]), []string{"confidence", "evidence", "location", "name", "readme_url", "slug", "version", "vulnerabilities"}},
+		{"main_theme", obj(doc["main_theme"]), []string{"confidence", "evidence", "location", "name", "parent", "slug", "style_url", "version", "vulnerabilities", "warnings"}},
+		{"plugin", first(doc["plugins"]), []string{"confidence", "evidence", "last_updated", "location", "name", "possible_vulnerabilities", "readme_url", "slug", "version", "vulnerabilities", "warnings"}},
+		{"possible_vulnerabilities", obj(first(doc["plugins"])["possible_vulnerabilities"]), []string{"count", "critical", "fixed_in", "high", "listed"}},
 		{"plugin version", obj(first(doc["plugins"])["version"]), []string{"candidates", "confidence", "evidence", "latest", "number", "outdated"}},
 		{"vulnerability", first(first(doc["plugins"])["vulnerabilities"]), []string{"affected_versions", "cve", "cvss", "cwe", "fixed_in",
 			"published", "references", "severity", "sources", "title", "verdict"}},
@@ -179,12 +181,15 @@ func TestCLIReport(t *testing.T) {
 		"Other themes (1)", "twentytwenty (confidence 80%)",
 		"Plugins (1)", "[!] contact-form-7 (confidence 100%)", "Name: Contact Form 7",
 		"Version: 5.3.1 (confidence 92%); outdated: the latest is 6.1",
-		"Vulnerabilities: 1 confirmed, 1 possible", "[CRITICAL] Contact Form 7 <= 5.3.1 - Unrestricted File Upload",
+		"Vulnerabilities: 1 confirmed", "[CRITICAL] Contact Form 7 <= 5.3.1 - Unrestricted File Upload",
 		"confirmed - CVE-2020-35489 - CVSS 9.8 - fixed in 5.3.2", "https://www.wordfence.com/threat-intel/vulnerabilities/id/a1",
-		"1 possible (the version is unknown or uncertain): use -v to list them",
+		"Possible vulnerabilities: 1, fixed in 5.0 (not listed: only a secondary source says 5.3.1 is affected; --possible lists it)",
+		"Last updated: 2026-09-30 (on WordPress.org)", "[!] Directory listing is enabled: https://example.com/wp-content/plugins/contact-form-7/ (12 entries)",
+		"Possible vulnerabilities: 3 (1 critical), all fixed in 2.5 (not listed: the version is unknown; --possible lists them)",
+		"(the possible ones are counted, not listed: --possible lists them)",
 		"JavaScript libraries (1)", "[!] jquery 1.12.4", "[MEDIUM] Regex in its jQuery.htmlPrefilter",
 		"Users (2)", "admin (ID 1)", "Display name: Site Admin", `"Guest Writer" (display name only; not a username)`,
-		"2 confirmed, 1 possible", "Data: Wordfence (2026-10-19)",
+		"2 confirmed, 4 possible", "Data: Wordfence (2026-10-19)",
 		"Finished in 4.2s: 42 requests, 8.8 KB sent, 1.4 MB received",
 	} {
 		if !strings.Contains(plain.String(), want) {
@@ -195,7 +200,7 @@ func TestCLIReport(t *testing.T) {
 		t.Errorf("default report must have no evidence, no colours and no possible vulnerabilities:\n%s", &plain)
 	}
 	for _, want := range []string{"Found by:", "system.listMethods (aggressive, 100%)", "Reference: https://codex", "https://example.com/feed/: timeout",
-		"Old XSS", "The sources disagree", "Affected: <= 5.3.1 (wordfence, cve)", "CWE-434", "https://contactform7.com/",
+		"Affected: <= 5.3.1 (wordfence, cve)", "CWE-434", "https://contactform7.com/",
 		"Readme: https://example.com/wp-content/plugins/contact-form-7/readme.txt", "readme.txt Stable tag (aggressive, 80%): 5.3.1"} {
 		if !strings.Contains(verbose.String(), want) {
 			t.Errorf("verbose report missing %q:\n%s", want, &verbose)
@@ -203,6 +208,31 @@ func TestCLIReport(t *testing.T) {
 	}
 	if !strings.Contains(colored.String(), "\x1b[") {
 		t.Error("coloured report has no ANSI sequences")
+	}
+	if strings.Contains(verbose.String(), "Old XSS") {
+		t.Error("-v must not list the possible vulnerabilities: --possible does")
+	}
+
+	// With --possible they are listed, and not summed up.
+	r = sampleResult()
+	pl := r.Plugins[0]
+	pl.Vulnerabilities = append(pl.Vulnerabilities, scan.Vulnerability{
+		Title: "Contact Form 7 < 5.0 - Old XSS", Verdict: scan.VerdictPossible, Severity: scan.SeverityMedium,
+		Affected: []string{"< 5.0"}, Sources: []string{"cve"}, Note: "The sources disagree",
+	})
+	pl.Possible.Listed = true
+	r.Themes[0].Possible.Listed = true
+	var listed bytes.Buffer
+	if err := WriteCLI(&listed, r, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Vulnerabilities: 1 confirmed, 1 possible", "Old XSS", "The sources disagree"} {
+		if !strings.Contains(listed.String(), want) {
+			t.Errorf("--possible report missing %q:\n%s", want, &listed)
+		}
+	}
+	if strings.Contains(listed.String(), "--possible lists") {
+		t.Errorf("--possible report must not point to --possible:\n%s", &listed)
 	}
 }
 

@@ -28,11 +28,11 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 		exclude[strings.ToLower(t.Slug)] = true
 	}
 	set := newComponentSet()
-	prefix := s.content.Path + "themes/"
+	prefix := s.themes.Path
 	mode := s.opts.ThemesDetection
 	if mode.Discover() {
 		if s.aggressive() {
-			s.fromListing(ctx, set, "themes/", exclude)
+			s.fromListing(ctx, set, s.themes, exclude)
 		}
 		for _, p := range s.discoveryPages(ctx) {
 			seen := map[string]bool{}
@@ -58,6 +58,16 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 	}
 	list := s.opts.Enumerate.Themes
 	switch {
+	case len(s.opts.ThemesList) > 0:
+		if s.aggressive() {
+			var slugs []string
+			for _, slug := range s.opts.ThemesList {
+				if !exclude[strings.ToLower(slug)] {
+					slugs = append(slugs, slug)
+				}
+			}
+			s.bruteForce(ctx, set, "Themes", s.themes, slugs)
+		}
 	case mode.BruteForce() && s.aggressive() && list != cli.ItemsNone:
 		var slugs []string
 		for _, slug := range s.bruteList(wordlists.Themes, list) {
@@ -65,7 +75,7 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 				slugs = append(slugs, slug)
 			}
 		}
-		s.bruteForce(ctx, set, "Themes", "themes/", slugs)
+		s.bruteForce(ctx, set, "Themes", s.themes, slugs)
 	case !mode.BruteForce() && (list == cli.ItemsPopular || list == cli.ItemsAll):
 		s.notice("-e %st only chooses the themes to brute-force, which --themes-detection passive (the default) does not do: the themes were found from what the site shows. Use --themes-detection mixed to also check every theme on the list.", itemCode(list))
 	}
@@ -87,15 +97,23 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 			}
 		})
 	}
+	var kept []*Theme
 	for i, c := range comps {
 		t := out[i]
+		// Every theme has a style.css with a Theme Name header. One seen
+		// only in links whose style.css does not answer is not installed
+		// (anymore): a stale link, not a theme.
+		if s.aggressive() && c.urlsOnly() && t.Name == "" {
+			continue
+		}
 		t.Evidence = c.evidence
 		sortEvidence(t.Evidence)
 		t.Confidence = combine(c.evidence)
 		t.Version = combineVersions(c.versions)
 		latest(t.Version, s.data.lists.Latest(wordlists.Themes, t.Slug))
+		kept = append(kept, t)
 	}
-	return out
+	return kept
 }
 
 // themesFromInventory splits the --wp-auth theme list into the main theme

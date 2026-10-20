@@ -464,6 +464,7 @@ type apiItem struct {
 	Name           string `json:"name"`
 	Version        string `json:"version"`
 	ActiveInstalls int    `json:"active_installs"`
+	LastUpdated    string `json:"last_updated"` // "2024-05-01 3:04pm GMT" for plugins, "2024-05-01" for themes
 }
 
 // popular pages through query_plugins or query_themes, most popular first.
@@ -478,13 +479,14 @@ func (u *updater) popular(ctx context.Context, api, action, key string, perPage,
 		q.Set("request[page]", fmt.Sprint(page))
 		// Only the fields cmsrecon keeps; the others make pages large.
 		for _, f := range []string{"description", "sections", "short_description", "rating", "ratings", "downloaded",
-			"download_link", "last_updated", "added", "tags", "compatibility", "homepage", "donate_link", "icons",
+			"download_link", "added", "tags", "compatibility", "homepage", "donate_link", "icons",
 			"banners", "screenshot_url", "preview_url", "author", "author_profile", "contributors", "requires",
 			"tested", "requires_php", "num_ratings", "support_threads", "support_threads_resolved"} {
 			q.Set("request[fields]["+f+"]", "0")
 		}
 		q.Set("request[fields][active_installs]", "1")
 		q.Set("request[fields][version]", "1")
+		q.Set("request[fields][last_updated]", "1")
 		data, err := u.getBytes(ctx, api+"?"+q.Encode(), nil, 32<<20)
 		if err != nil {
 			return nil, err
@@ -508,7 +510,11 @@ func (u *updater) popular(ctx context.Context, api, action, key string, perPage,
 				continue
 			}
 			seen[it.Slug] = true
-			out = append(out, wordlists.Item{Slug: it.Slug, Name: it.Name, Version: it.Version, ActiveInstalls: it.ActiveInstalls})
+			item := wordlists.Item{Slug: it.Slug, Name: it.Name, Version: it.Version, ActiveInstalls: it.ActiveInstalls}
+			if d := it.LastUpdated; len(d) >= 10 && d[4] == '-' && d[7] == '-' {
+				item.LastUpdated = d[:10]
+			}
+			out = append(out, item)
 		}
 		if len(list) == 0 || page >= info.Pages {
 			break

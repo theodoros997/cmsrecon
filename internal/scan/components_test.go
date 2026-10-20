@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -56,7 +57,15 @@ func readme(name, stable string, changelog ...string) string {
 // exposed backups and JavaScript libraries.
 func (f *fakeWP) addComponentSite() *fakeWP {
 	f.routes["/"] = respond(200, "text/html; charset=UTF-8", pluginHomepage, "Link", `<{{URL}}wp-json/>; rel="https://api.w.org/"`)
-	f.fallback = respond(404, "text/html", `<html><head><title>Page not found</title><link rel='stylesheet' href='{{URL}}wp-content/themes/twentytwenty/style.css?ver=1.8' /></head><body class="error404">Nothing here</body></html>`)
+	notFound := respond(404, "text/html", `<html><head><title>Page not found</title><link rel='stylesheet' href='{{URL}}wp-content/themes/twentytwenty/style.css?ver=1.8' /></head><body class="error404">Nothing here</body></html>`)
+	// Like a real site, the scripts and stylesheets the pages load exist.
+	f.fallback = func(w http.ResponseWriter, r *http.Request) {
+		if ext := path.Ext(r.URL.Path); (ext == ".js" || ext == ".css") && strings.HasPrefix(r.URL.Path, "/wp-") {
+			respond(200, "text/css", "/* asset */")(w, r)
+			return
+		}
+		notFound(w, r)
+	}
 	f.routes["/feed/"] = respond(200, "application/rss+xml", pluginFeed)
 	f.routes["/wp-json/"] = respond(200, "application/json", `{"name":"Lab","namespaces":["oembed/1.0","contact-form-7/v1","yoast/v1","wp/v2","wp-site-health/v1","redirection/v1","mystery-plugin/v2"],"routes":{}}`)
 
@@ -118,8 +127,9 @@ func writeData(t *testing.T) string {
 		t.Fatal(err)
 	}
 	w := &wordlists.WPOrg{UpdatedAt: time.Now().UTC(), CoreLatest: "6.6.2",
-		Plugins: []wordlists.Item{{Slug: "akismet", Version: "5.3"}, {Slug: "contact-form-7", Version: "6.1"}, {Slug: "duplicator", Version: "1.5.7"}, {Slug: "not-installed"}},
-		Themes:  []wordlists.Item{{Slug: "twentytwenty", Version: "2.7"}, {Slug: "twentynineteen", Version: "2.9"}, {Slug: "astra"}},
+		Plugins: []wordlists.Item{{Slug: "akismet", Version: "5.3", LastUpdated: "2019-01-01"}, {Slug: "contact-form-7", Version: "6.1", LastUpdated: "2026-09-30"},
+			{Slug: "duplicator", Version: "1.5.7"}, {Slug: "wordpress-seo", LastUpdated: "2020-05-01"}, {Slug: "not-installed"}},
+		Themes: []wordlists.Item{{Slug: "twentytwenty", Version: "2.7"}, {Slug: "twentynineteen", Version: "2.9"}, {Slug: "astra"}},
 	}
 	if err := wordlists.WriteWPOrg(filepath.Join(dir, wordlists.WPOrgFile), w); err != nil {
 		t.Fatal(err)
@@ -221,9 +231,12 @@ func TestComponentsAndVulnerabilities(t *testing.T) {
 	if len(dup.Vulnerabilities) != 1 || dup.Vulnerabilities[0].Title != "Duplicator <= 1.3.26 - Arbitrary File Download" {
 		t.Errorf("duplicator vulnerabilities = %+v (the fixed older one must not match)", dup.Vulnerabilities)
 	}
+	// Its version is unknown and its one vulnerability was fixed long ago:
+	// counted as possible, not listed.
 	ak := pluginBySlug(r, "akismet")
-	if ak.Version.Number != "" || ak.Confidence != 70 || len(ak.Vulnerabilities) != 1 || ak.Vulnerabilities[0].Verdict != VerdictPossible {
-		t.Errorf("akismet = %+v, vulnerabilities %+v", ak, ak.Vulnerabilities)
+	if ak.Version.Number != "" || ak.Confidence != 70 || len(ak.Vulnerabilities) != 0 ||
+		ak.Possible == nil || ak.Possible.Count != 1 || ak.Possible.FixedIn != "3.1.5" || ak.Possible.Listed {
+		t.Errorf("akismet = %+v, possible %+v", ak, ak.Possible)
 	}
 	if red := pluginBySlug(r, "redirection"); red == nil || red.Confidence != confPluginRESTKnown {
 		t.Errorf("redirection (REST namespace only) = %+v", red)
@@ -552,7 +565,7 @@ func TestDefaultScanDiscoversWithoutBruteForce(t *testing.T) {
 		t.Errorf("woocommerce = %+v", wc)
 	}
 	if wp := pluginBySlug(r, "wpforms-lite"); wp == nil || wp.Evidence[0].Mode != modeAggressive || wp.Version.Number != "1.6.3" || wp.Version.Confidence != 40 {
-		t.Errorf("wpforms-lite (crawled contact page) = %+v, version %+v", wp, wp.Version)
+		t.Errorf("wpforms-lite (crawled contact page) = %+v", wp)
 	}
 	if pluginBySlug(r, "duplicator") != nil {
 		t.Error("an inactive plugin can only be found by brute force or a listing, and neither applies")
@@ -564,7 +577,10 @@ func TestDefaultScanDiscoversWithoutBruteForce(t *testing.T) {
 
 	reqs := f.requested()
 	for _, req := range reqs {
-		if strings.HasPrefix(req, "HEAD ") || req == "GET /wp-admin/" || strings.Contains(req, "add-to-cart") || strings.Contains(req, ".pdf") || strings.Contains(req, "other.example") {
+		// HEAD on a plugin folder is brute force; HEAD on a file the page
+		// loads only confirms the link is live.
+		bruteForce := strings.HasPrefix(req, "HEAD ") && strings.HasSuffix(req, "/")
+		if bruteForce || req == "GET /wp-admin/" || strings.Contains(req, "add-to-cart") || strings.Contains(req, ".pdf") || strings.Contains(req, "other.example") {
 			t.Errorf("unexpected request %s", req)
 		}
 	}
@@ -622,5 +638,81 @@ func TestCrawlIsOff(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestNoHallucinatedComponents covers what pages contain that looks like a
+// plugin or theme but is not one: template placeholders around plugin
+// paths, links to files of plugins and themes removed since, and REST
+// namespaces or meta generators that happen to match a slug.
+func TestNoHallucinatedComponents(t *testing.T) {
+	site := func(t *testing.T) *fakeWP {
+		f := newFakeWP(t).addComponentSite()
+		home := strings.Replace(pluginHomepage, "</head>", `<meta name="generator" content="performance-lab 3.2.0; plugins: webp-uploads" />
+<script>var tpl = "{{URL}}wp-content/plugins/${slug}/x.js", fmt = "{{URL}}wp-content/plugins/%s/y.js", hb = "{{URL}}wp-content/plugins/{{name}}/z.js";</script>
+<img src="{{URL}}wp-content/plugins/old-gallery/images/photo.jpg" />
+<img src="{{URL}}wp-content/themes/old-theme/images/header.jpg" />
+</head>`, 1)
+		f.routes["/"] = respond(200, "text/html; charset=UTF-8", home, "Link", `<{{URL}}wp-json/>; rel="https://api.w.org/"`)
+		f.routes["/wp-json/"] = respond(200, "application/json", `{"namespaces":["wp/v2","contact-form-7/v1","loco-translate/v1","updraftplus/v1"]}`)
+		f.routes["/wp-content/plugins/updraftplus/"] = respond(200, "text/html", "")
+		return f
+	}
+	plugins := func(r *Result) []string {
+		var out []string
+		for _, p := range r.Plugins {
+			out = append(out, p.Slug)
+		}
+		return out
+	}
+
+	t.Run("mixed mode verifies", func(t *testing.T) {
+		f := site(t)
+		r := runScan(t, options(f.URL(), cli.ModeMixed))
+		got := plugins(r)
+		for _, bad := range []string{"${slug}", "%s", "{{name}}", "old-gallery", "loco-translate", "performance-lab"} {
+			if slices.Contains(got, bad) {
+				t.Errorf("reported %q: %v", bad, got)
+			}
+		}
+		up := pluginBySlug(r, "updraftplus")
+		if up == nil || up.Location == "" {
+			t.Errorf("a guessed plugin whose folder answers is confirmed: %+v (%v)", up, got)
+		}
+		if themeBySlug(r.Themes, "old-theme") != nil {
+			t.Errorf("a theme whose style.css is gone was reported: %+v", r.Themes)
+		}
+		// A plugin known only from its REST namespace has no observed folder.
+		if red := pluginBySlug(r, "redirection"); red != nil && red.Location != "" {
+			t.Errorf("redirection location %q was never seen", red.Location)
+		}
+		if cf7 := pluginBySlug(r, "contact-form-7"); cf7 == nil || cf7.Location == "" {
+			t.Errorf("contact-form-7 = %+v", cf7)
+		}
+	})
+
+	t.Run("passive mode keeps links but drops guesses", func(t *testing.T) {
+		f := site(t)
+		r := runScan(t, options(f.URL(), cli.ModePassive))
+		got := plugins(r)
+		if !slices.Contains(got, "old-gallery") {
+			t.Errorf("without requests a link is all the evidence there is: %v", got)
+		}
+		for _, bad := range []string{"loco-translate", "updraftplus", "performance-lab", "${slug}", "%s"} {
+			if slices.Contains(got, bad) {
+				t.Errorf("an unconfirmed guess was reported in passive mode: %q in %v", bad, got)
+			}
+		}
+	})
+}
+
+func TestValidSlug(t *testing.T) {
+	for s, want := range map[string]bool{
+		"contact-form-7": true, "LayerSlider": true, "js_composer": true, "wp-plugin.v2": true,
+		"${slug}": false, "%s": false, "{{name}}": false, "..": false, ".": false, "": false, "a b": false, "%E2%9C%93": false,
+	} {
+		if validSlug(s) != want {
+			t.Errorf("validSlug(%q) = %v", s, !want)
+		}
 	}
 }

@@ -141,7 +141,7 @@ func (s *Scanner) restInventory(ctx context.Context) *inventory {
 				continue
 			}
 			ev := Evidence{Method: methodInventory, Mode: modeAggressive, URL: pu, Value: p.Status, Confidence: 100}
-			pl := &Plugin{Slug: slug, Name: p.Name, Location: s.contentURL("plugins/" + slug + "/"), Confidence: 100, Evidence: []Evidence{ev}}
+			pl := &Plugin{Slug: slug, Name: p.Name, Location: under(s.plugins, slug+"/"), Confidence: 100, Evidence: []Evidence{ev}}
 			pl.Version = combineVersions(versionEvidence(pu, p.Version))
 			inv.plugins = append(inv.plugins, pl)
 		}

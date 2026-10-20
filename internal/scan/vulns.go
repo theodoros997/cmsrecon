@@ -24,11 +24,14 @@ func (s *Scanner) matchVulnerabilities() {
 	for t := r.MainTheme; t != nil; t = t.Parent {
 		themes = append(themes, t)
 	}
+	var possible int
 	for _, t := range themes {
-		t.Vulnerabilities = toVulns(db.Match(vulndb.KindTheme, t.Slug, detected(t.Version)))
+		t.Vulnerabilities, t.Possible = s.splitPossible(db.Match(vulndb.KindTheme, t.Slug, detected(t.Version)))
+		possible += t.Possible.count()
 	}
 	for _, p := range r.Plugins {
-		p.Vulnerabilities = toVulns(db.Match(vulndb.KindPlugin, p.Slug, detected(p.Version)))
+		p.Vulnerabilities, p.Possible = s.splitPossible(db.Match(vulndb.KindPlugin, p.Slug, detected(p.Version)))
+		possible += p.Possible.count()
 	}
 	for _, l := range r.JSLibraries {
 		// Library vulnerabilities only apply to a known version.
@@ -60,7 +63,61 @@ func (s *Scanner) matchVulnerabilities() {
 	for _, l := range r.JSLibraries {
 		count(l.Vulnerabilities)
 	}
+	if !s.opts.ShowPossible {
+		c.Possible = possible // they are not in the lists, only summarized
+	}
 	r.VulnerabilityCounts = c
+}
+
+// splitPossible separates the possible matches from the others. With
+// --possible they stay in the list; either way they are summarized.
+func (s *Scanner) splitPossible(ms []vulndb.Match) ([]Vulnerability, *PossibleVulns) {
+	var keep []vulndb.Match
+	var sum *PossibleVulns
+	allFixed := true
+	for _, m := range ms {
+		if m.Verdict != vulndb.VerdictPossible {
+			keep = append(keep, m)
+			continue
+		}
+		if s.opts.ShowPossible {
+			keep = append(keep, m)
+		}
+		if sum == nil {
+			sum = &PossibleVulns{Listed: s.opts.ShowPossible}
+		}
+		sum.Count++
+		switch m.Advisory.Severity {
+		case SeverityCritical:
+			sum.Critical++
+		case SeverityHigh:
+			sum.High++
+		}
+		// The highest fix of each advisory; the highest of those fixes all.
+		top := ""
+		for _, f := range m.Advisory.Fixed {
+			if top == "" || vulndb.Compare(f, top) > 0 {
+				top = f
+			}
+		}
+		switch {
+		case top == "":
+			allFixed = false
+		case sum.FixedIn == "" || vulndb.Compare(top, sum.FixedIn) > 0:
+			sum.FixedIn = top
+		}
+	}
+	if sum != nil && !allFixed {
+		sum.FixedIn = ""
+	}
+	return toVulns(keep), sum
+}
+
+func (p *PossibleVulns) count() int {
+	if p == nil {
+		return 0
+	}
+	return p.Count
 }
 
 // detected turns a detected version into what the matcher needs: the
@@ -70,7 +127,7 @@ func detected(v *Version) vulndb.Detected {
 	if v == nil {
 		return vulndb.Detected{}
 	}
-	d := vulndb.Detected{Version: v.Number, Confidence: v.Confidence}
+	d := vulndb.Detected{Version: v.Number, Confidence: v.Confidence, Latest: v.Latest}
 	if v.Number != "" {
 		for _, c := range v.Candidates {
 			if c.Number != v.Number && c.Confidence >= MinVersionConfidence {

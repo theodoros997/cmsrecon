@@ -171,20 +171,38 @@ type Theme struct {
 	Parent     *Theme     `json:"parent,omitempty"`
 	Evidence   []Evidence `json:"evidence"`
 
+	LastUpdated     string          `json:"last_updated,omitempty"` // on WordPress.org, YYYY-MM-DD
+	Warnings        []string        `json:"warnings"`
 	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
+	Possible        *PossibleVulns  `json:"possible_vulnerabilities,omitempty"`
+}
+
+// PossibleVulns summarizes the vulnerabilities that may apply to a
+// component whose version is unknown or uncertain. They are listed in
+// Vulnerabilities only with --possible: a plugin with an unknown version
+// can have hundreds.
+type PossibleVulns struct {
+	Count    int    `json:"count"`
+	Critical int    `json:"critical"`
+	High     int    `json:"high"`
+	FixedIn  string `json:"fixed_in,omitempty"` // a version that fixes every one of them; omitted when one has no fix
+	Listed   bool   `json:"listed"`             // they are in vulnerabilities too
 }
 
 // Plugin is a detected plugin.
 type Plugin struct {
 	Slug       string     `json:"slug"`
-	Name       string     `json:"name,omitempty"` // from its readme
-	Location   string     `json:"location"`
+	Name       string     `json:"name,omitempty"`     // from its readme
+	Location   string     `json:"location,omitempty"` // its folder, when a page or a request showed it
 	ReadmeURL  string     `json:"readme_url,omitempty"`
 	Confidence int        `json:"confidence"`
 	Version    *Version   `json:"version"`
 	Evidence   []Evidence `json:"evidence"`
 
+	LastUpdated     string          `json:"last_updated,omitempty"` // on WordPress.org, YYYY-MM-DD
+	Warnings        []string        `json:"warnings"`
 	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
+	Possible        *PossibleVulns  `json:"possible_vulnerabilities,omitempty"`
 }
 
 // JSLibrary is a JavaScript library the scanned pages load.
@@ -292,7 +310,7 @@ func (r *Result) normalize() {
 	}
 	r.Plugins = nonNil(r.Plugins)
 	for _, p := range r.Plugins {
-		p.Evidence = nonNil(p.Evidence)
+		p.Evidence, p.Warnings = nonNil(p.Evidence), nonNil(p.Warnings)
 		p.Version.normalize()
 		p.Vulnerabilities = normalizeVulns(p.Vulnerabilities)
 	}
@@ -314,7 +332,7 @@ func (r *Result) normalize() {
 }
 
 func (t *Theme) normalize() {
-	t.Evidence = nonNil(t.Evidence)
+	t.Evidence, t.Warnings = nonNil(t.Evidence), nonNil(t.Warnings)
 	t.Version.normalize()
 	t.Vulnerabilities = normalizeVulns(t.Vulnerabilities)
 }

@@ -213,7 +213,7 @@ func (s *Scanner) checkFullPathDisclosure(ctx context.Context) []Finding {
 		urls = append(urls, s.url(f))
 	}
 	// Hello Dolly ships with WordPress but is often deleted.
-	urls = append(urls, s.contentURL("plugins/hello.php"))
+	urls = append(urls, under(s.plugins, "hello.php"))
 	for _, u := range urls {
 		res := s.get(ctx, u)
 		if res == nil {

@@ -36,7 +36,7 @@ Bodies are compared after removing the requested name from both of them (404 pag
 | Hosted on WordPress.com | A `*.wordpress.com` host, the `WordPress.com` meta generator, or, when the site serves no wp-content of its own, assets from `s<N>.wp.com` / `*.files.wordpress.com` (Jetpack sites load from wp.com too but have their own wp-content). Stop, even with `--force`: the platform, not the client, runs the infrastructure | v1 **built** |
 | Unfinished install | Homepage redirects to `/wp-admin/install.php` (installer) or `/wp-admin/setup-config.php` (no `wp-config.php`): critical finding `unfinished-install`, and the scan stops | v1 **built** |
 | Web server | `Server` header selects Apache, Nginx (also OpenResty, Tengine) or IIS directory-listing signatures; any other value tries all of them | v1 **built** |
-| Content directory | The wp-content URL from page URLs, including a renamed one (e.g. Bedrock's `/app/`); `<base>/wp-content/` when none is seen. Aggressive checks under wp-content use it | v1 **built** |
+| Content directory | The wp-content URL from page URLs, including a renamed one (e.g. Bedrock's `/app/`); `<base>/wp-content/` when none is seen. Aggressive checks under wp-content use it. `--wp-content-dir` and `--wp-plugins-dir` override it when detection gets it wrong (a path relative to the target, or a URL, whose host joins the scope), as WPScan's options of the same names | v1 **built** |
 | SAML / SSO login | Interactive browser login, then reuse the session cookies | later |
 
 ## Interesting findings
@@ -93,8 +93,9 @@ Different templates load different plugins (a shop page the cart and payment plu
 |---|---|---|---|
 | Main theme | Signals from the homepage and the 404 page: the `wp-child-theme-<slug>` or `wp-theme-<slug>` body class (100%), the last theme `style.css` link on the page (70%; a child theme's stylesheet is enqueued after its parent's), the theme with the most URLs (40%; other themes seen get 10%), the WooFramework meta generator (80%). Outside passive mode, a runner-up whose `style.css` names the leader in `Template:` is the child theme and becomes the main theme | passive | v1 **built** |
 | Theme version | `Version:` header in the theme's `style.css` (80%, aggressive), plus the theme's name, URI and author. `?ver=` on the theme's `style.css` link (50%, passive), ignored when it equals a WordPress core version candidate, which is what WordPress adds when a theme enqueues its stylesheet without a version. The parent theme comes from the `Template:` header or the `wp-theme-<slug>` body class and gets the same version signals | mixed | v1 **built** |
-| Theme discovery | Themes other than the main one and its parent: theme URLs in the [discovery](#discovery) pages (80%) and the `/wp-content/themes/` directory listing (100%). With `--themes-detection mixed` or `aggressive`, `/wp-content/themes/<slug>/` is also brute-forced for the vulnerable, popular or all lists (`-e vt`, `t`, `at`). Each theme's `style.css` gives its name and version (a `Theme Name` header adds 100%) | mixed | v1 **built** |
+| Theme discovery | Themes other than the main one and its parent: theme URLs in the [discovery](#discovery) pages (80%) and the `/wp-content/themes/` directory listing (100%). With `--themes-detection mixed` or `aggressive`, `/wp-content/themes/<slug>/` is also brute-forced for the vulnerable, popular or all lists (`-e vt`, `t`, `at`); `--themes-list` brute-forces only the themes it names instead. Each theme's `style.css` gives its name and version (a `Theme Name` header adds 100%). Outside passive mode, a theme known only from links whose `style.css` gives no name is dropped: the links point to a theme removed since | mixed | v1 **built** |
 | Outdated themes | The latest version from the WordPress.org data `cmsrecon update` downloads | n/a | v1 **built** |
+| Folder checks | As for [plugins](#plugins): last updated, abandoned, directory listing, `error_log` | mixed | v1 **built** |
 
 ## Plugins
 
@@ -105,10 +106,14 @@ Different templates load different plugins (a shop page the cart and payment plu
 | Signatures | 160 signatures for 130 plugins: HTML comments (Yoast SEO, All in One SEO, MonsterInsights, LiteSpeed Cache, …), meta generators (Elementor, WooCommerce, Slider Revolution, WPML, …), JavaScript configuration objects, CSS classes specific to one plugin, response headers (`X-Powered-By: W3 Total Cache/…`, `X-LiteSpeed-Tag`, …), and the folders caching and builder plugins write to (`cache/autoptimize/`, `uploads/elementor/`, …). Signatures that print a version give it at 80%. A meta generator of the form `<known slug> <version>` (the Performance team plugins) counts at 60%. WPScan keeps its signatures in its licensed `dynamic_finders.yml`; these are cmsrecon's own | passive | Comment, HeaderPattern, Xpath, BodyPattern, JavascriptVar | v1 **built** |
 | Sitemap post types | Post types and taxonomies only one plugin registers, as the sitemap index lists them: `product` is WooCommerce, `tribe_events` The Events Calendar, `job_listing` WP Job Manager, … (80%). Generic names such as `event` or `portfolio` are ignored | aggressive | none (new) | v1 **built** |
 | Directory listing | `/wp-content/plugins/` with directory listing names every plugin installed, inactive ones included (100%). One request | aggressive | none (new) | v1 **built** |
+| Named list | `--plugins-list` (a comma-separated list or a file, one slug per line, `#` comments): `/wp-content/plugins/<slug>/` for exactly those plugins, instead of an `-e` list and whatever `--plugins-detection` says. Slugs are checked to be slugs, so a list cannot reach outside the plugins folder | aggressive | `--plugins-list` | v1 **built** |
 | Brute force | Only with `--plugins-detection mixed` or `aggressive` (the default, `passive`, never brute-forces, as in WPScan): `/wp-content/plugins/<slug>/` for the vulnerable, popular or all lists (`-e vp`, `p`, `ap`), one request each; see [brute force](#soft-404-handling). Found with a listing 100%, a 200 80%, a 401 or 403 70%, another status 60%. The only way to find inactive plugins on a server without listings | aggressive | KnownLocations | v1 **built** |
 | Readme | `readme.txt`, then `README.txt`: a readme proves the plugin is there (100%) and gives its name | aggressive | Readme | v1 **built** |
-| Version evidence | The readme's `Stable tag` (80%, ignored when it is `trunk`) and the highest version in its changelog section (60%; some changelogs list the oldest release first); without either, `changelog.txt` or `CHANGELOG.md` (60%). `?ver=` on the plugin's assets: 40% for one asset, 50% for two, 60% for three or more, ignoring values equal to a core version candidate and bundled libraries (`/vendor/`, `/lib/`, files recognized as JavaScript libraries). Signature versions (80%) | mixed | Readme, dynamic finders | v1 **built** (improved) |
+| Verification | What a page shows can outlive the plugin: links in old posts to a plugin removed since, or template placeholders (`${slug}`, `%s`, `{{name}}`) around a plugin path in JavaScript. A name is only a plugin if it is a valid slug. Outside passive mode, a plugin known only from links is checked by a `HEAD` request to one of the linked files and dropped on a 404 or 410; a plugin known only from a hint (a REST namespace guess or a generic generator tag) is kept only if its folder or readme answers. `location` is only reported when the site linked to the folder or it answered | aggressive | none (new) | v1 **built** |
+| Version evidence | The readme's `Stable tag` (80%, ignored when it is `trunk`) and the highest version in its changelog section (60%; some changelogs list the oldest release first); without either, `changelog.txt` or `CHANGELOG.md` (60%), then the banner comment at the top of up to two of the plugin's own scripts or stylesheets the pages load, when it names the plugin (`/*! elementor - v3.5.0 */`; 50%; libraries bundled in the plugin are skipped). `?ver=` on the plugin's assets: 40% for one asset, 50% for two, 60% for three or more, ignoring values equal to a core version candidate and bundled libraries (`/vendor/`, `/lib/`, files recognized as JavaScript libraries). Signature versions (80%) | mixed | Readme, dynamic finders | v1 **built** (improved) |
 | Outdated | The latest version from the WordPress.org data `cmsrecon update` downloads (the 2,000 most installed plugins) | n/a | partly | v1 **built** |
+| Last updated, abandoned | When WordPress.org last saw an update, from the same data; a warning when it is more than two years before the scan | n/a | Last Updated | v1 **built** |
+| Folder checks | For each plugin with a known location: a directory listing on its folder, and `<folder>error_log` whose first 64 KB contain a PHP log line (some hosts write a PHP `error_log` next to the failing script). Warnings on the plugin, two requests each | aggressive | per-item listing and error log | v1 **built** |
 | Closed plugins | Plugins removed from WordPress.org | n/a | partly | v1.1 |
 | Hash fingerprinting | Hashes of each release's static JS and CSS from WordPress.org SVN tags, giving an exact version or a narrow range | aggressive | none (new) | v1.1 |
 
@@ -170,7 +175,9 @@ Each match gets a verdict:
 
 - **confirmed:** the detected version is inside the primary source's affected range, was detected with at least 70% confidence, no other candidate version with 40% or more is outside the range, and the sources agree;
 - **likely:** inside the range, but one of those conditions fails; the note says which;
-- **possible:** the version is unknown, or only the secondary source says it is affected. Listed with `-v`, counted otherwise.
+- **possible:** the version is unknown, or only the secondary source says it is affected.
+
+With an unknown version, an advisory with no lower bound that reaches the latest release (or has no fix at all) affects every version, whatever is installed: it is **likely**, with a note. The other possible matches are summed up in one line per plugin or theme (how many, how many are critical or high, the version that fixes all of them) and counted; `--possible` lists them. A plugin of unknown version can otherwise list dozens of them, which buries the ones that matter.
 
 Versions outside every source's range are not reported. Each match shows the affected ranges, the first fixed version above the detected one (for core, the fix on the same branch), or that no fix exists, the CVSS score, CVEs, CWE and references. Core vulnerabilities are only matched against a known version: every WordPress vulnerability ever published "may" apply to an unknown one. A notice says when the data is missing, comes from the CVE List only, or is more than 7 days old.
 
@@ -178,6 +185,35 @@ Versions outside every source's range are not reported. Each match shows the aff
 
 | Format | Release |
 |---|---|
-| CLI (colored, `--no-color`, `-v` for evidence) | v1 **built** |
+| CLI (colored, `--no-color`, `-v` for evidence, `--possible` to list possible vulnerabilities) | v1 **built** |
 | JSON, documented in [json-report.md](json-report.md) | v1 **built** |
 | SARIF, HTML | v1.1 |
+
+Exit code 5 says the scan found confirmed or likely vulnerabilities, as WPScan's does; see the [README](../README.md#exit-codes).
+
+## Compared with WPScan
+
+What WPScan does, from its public documentation and the names of its finders, and where cmsrecon stands. cmsrecon shares no code or data with WPScan.
+
+| WPScan | cmsrecon |
+|---|---|
+| Interesting findings (19 finders) | All built, same checks; the XML-RPC and full path disclosure checks go further (see [interesting findings](#interesting-findings)) |
+| Core version from feed generators, meta tags and readme | Built, plus core `?ver=` and `version.php` served as source |
+| Core version from unique file fingerprints | Planned: needs a hash database built from official releases |
+| Main theme from CSS links, body classes and WooFramework; version from `style.css` | Built |
+| Themes and plugins from homepage and 404 page URLs, comments, headers, body patterns, JavaScript variables, XPath, the REST API | Built, plus a small crawl, sitemaps, REST namespaces and directory listings |
+| `--plugins-detection` / `--themes-detection` (passive by default, mixed, aggressive) | Built, same meaning and default |
+| `--plugins-list`, `--themes-list` | Built |
+| `--wp-content-dir`, `--wp-plugins-dir` | Built |
+| `--stealthy` (random User-Agent, passive) | Built |
+| Plugin version from the readme | Built, plus changelog files and file banners |
+| Last updated, directory listing and error log of each plugin and theme | Built |
+| Users from author IDs, posts, sitemaps (core and Yoast), oEmbed, feeds, the REST API | Built |
+| Users from login error messages | Never: one login attempt per username can lock accounts |
+| Password attacks through `wp-login.php` and XML-RPC | Never |
+| Timthumbs (`-e tt`), media attachments (`-e m`) | Planned for v1.1 |
+| Vulnerability data from the WPScan API (token, daily quota) | Offline data from Wordfence, the CVE List and retire.js, with verdicts and possible vulnerabilities summed up |
+| Exit code 5 when vulnerable | Built (confirmed or likely vulnerabilities) |
+| `--max-scan-duration` | Not yet |
+| `--plugins-threshold` / `--themes-threshold` | Not needed: brute force is off by default and its size is chosen with `-e` |
+| JavaScript library vulnerabilities | Not a WPScan finder; built in cmsrecon |

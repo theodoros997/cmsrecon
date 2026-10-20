@@ -54,7 +54,7 @@ The inactive Duplicator and the unused themes only show up with brute force, as 
 ./cmsrecon -u http://localhost:8080 -e p,t,cb,dbe,bf,u1-5 --plugins-detection mixed --themes-detection mixed
 ```
 
-Add `-v` to see how each item was found and to list the possible vulnerabilities.
+Add `-v` to see how each item was found, and `--possible` to list the possible vulnerabilities. A scan that finds confirmed or likely vulnerabilities exits with code 5, as WPScan does.
 
 With WPScan, for comparison (Kali WSL reaches the lab on `localhost`):
 

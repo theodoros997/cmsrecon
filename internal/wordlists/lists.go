@@ -52,6 +52,7 @@ type Item struct {
 	Name           string `json:"name,omitempty"`
 	Version        string `json:"version,omitempty"` // the latest release
 	ActiveInstalls int    `json:"active_installs,omitempty"`
+	LastUpdated    string `json:"last_updated,omitempty"` // YYYY-MM-DD
 }
 
 // WPOrg is the WordPress.org metadata "cmsrecon update" stores.
@@ -71,13 +72,15 @@ type Lists struct {
 	UpdatedAt      time.Time // when the WordPress.org data was downloaded; zero for the built-in lists
 	CoreLatest     string    // the latest WordPress release, when downloaded
 
-	latest map[string]string // kind/slug -> latest version
-	known  map[string]bool   // kind/slug of every listed slug
+	latest  map[string]string // kind/slug -> latest version
+	updated map[string]string // kind/slug -> last updated, YYYY-MM-DD
+	known   map[string]bool   // kind/slug of every listed slug
+	popular map[string]bool   // kind/slug of the popular and premium slugs
 }
 
 // Builtin returns the lists compiled into cmsrecon.
 func Builtin() *Lists {
-	l := &Lists{latest: map[string]string{}, known: map[string]bool{}}
+	l := &Lists{latest: map[string]string{}, updated: map[string]string{}, known: map[string]bool{}, popular: map[string]bool{}}
 	l.PopularPlugins = mergeSlugs(lines(builtinPopularPlugins), lines(builtinPremiumPlugins))
 	l.PopularThemes = mergeSlugs(lines(builtinPopularThemes), lines(builtinPremiumThemes))
 	l.index()
@@ -99,14 +102,15 @@ func Load(dir string) (*Lists, error) {
 		if len(w.Themes) > 0 {
 			l.PopularThemes = mergeSlugs(itemSlugs(w.Themes), lines(builtinPremiumThemes))
 		}
-		for _, it := range w.Plugins {
-			if it.Version != "" {
-				l.latest[Plugins+"/"+strings.ToLower(it.Slug)] = it.Version
-			}
-		}
-		for _, it := range w.Themes {
-			if it.Version != "" {
-				l.latest[Themes+"/"+strings.ToLower(it.Slug)] = it.Version
+		for kind, items := range map[string][]Item{Plugins: w.Plugins, Themes: w.Themes} {
+			for _, it := range items {
+				k := kind + "/" + strings.ToLower(it.Slug)
+				if it.Version != "" {
+					l.latest[k] = it.Version
+				}
+				if it.LastUpdated != "" {
+					l.updated[k] = it.LastUpdated
+				}
 			}
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -129,14 +133,17 @@ func Load(dir string) (*Lists, error) {
 }
 
 func (l *Lists) index() {
+	l.popular = map[string]bool{}
 	for _, s := range l.PopularPlugins {
 		l.known[Plugins+"/"+strings.ToLower(s)] = true
+		l.popular[Plugins+"/"+strings.ToLower(s)] = true
 	}
 	for _, s := range l.AllPlugins {
 		l.known[Plugins+"/"+strings.ToLower(s)] = true
 	}
 	for _, s := range l.PopularThemes {
 		l.known[Themes+"/"+strings.ToLower(s)] = true
+		l.popular[Themes+"/"+strings.ToLower(s)] = true
 	}
 	for _, s := range l.AllThemes {
 		l.known[Themes+"/"+strings.ToLower(s)] = true
@@ -147,6 +154,17 @@ func (l *Lists) index() {
 // or "" when it is not in the downloaded metadata.
 func (l *Lists) Latest(kind, slug string) string {
 	return l.latest[kind+"/"+strings.ToLower(slug)]
+}
+
+// LastUpdated returns when a plugin or theme was last updated on
+// WordPress.org (YYYY-MM-DD), or "" when it is not in the downloaded data.
+func (l *Lists) LastUpdated(kind, slug string) string {
+	return l.updated[kind+"/"+strings.ToLower(slug)]
+}
+
+// Popular reports whether a slug is in the popular or premium list.
+func (l *Lists) Popular(kind, slug string) bool {
+	return l.popular[kind+"/"+strings.ToLower(slug)]
 }
 
 // Known reports whether a slug is in any list.
