@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/theodoros997/cmsrecon/internal/corehash"
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
 	"github.com/theodoros997/cmsrecon/internal/wordlists"
 )
@@ -14,9 +15,11 @@ const staleAfter = 7 * 24 * time.Hour
 // scanData is what a scan matches against: vulnerabilities, JavaScript
 // library patterns and the slug lists. It is read once, before the checks.
 type scanData struct {
-	vulns *vulndb.DB
-	js    *vulndb.JSRepo
-	lists *wordlists.Lists
+	vulns    *vulndb.DB
+	js       *vulndb.JSRepo
+	lists    *wordlists.Lists
+	exploits *vulndb.ExploitIndex
+	hashes   *corehash.DB // nil without "cmsrecon update" or in passive mode
 }
 
 // loadData reads the data directory. Missing data is not an error: the
@@ -29,6 +32,7 @@ func (s *Scanner) loadData() {
 		// built-in lists and patterns are available.
 		d.vulns, d.lists = vulndb.New(), wordlists.Builtin()
 		d.js, _ = vulndb.ParseJSRepo([]byte("{}"))
+		d.exploits = vulndb.NewExploitIndex()
 	} else {
 		var err error
 		if d.vulns, err = vulndb.Open(dir); err != nil {
@@ -39,6 +43,15 @@ func (s *Scanner) loadData() {
 		}
 		if d.lists, err = wordlists.Load(dir); err != nil {
 			s.notice("Some WordPress.org data could not be read: %v", err)
+		}
+		if d.exploits, err = vulndb.LoadExploits(dir); err != nil {
+			s.notice("The public exploit index could not be read: %v", err)
+		}
+		// Only aggressive checks download core files to hash.
+		if s.aggressive() {
+			if d.hashes, err = corehash.Load(dir); err != nil {
+				s.notice("The WordPress core checksums could not be read: %v", err)
+			}
 		}
 	}
 	s.data = d
@@ -52,6 +65,9 @@ func (s *Scanner) loadData() {
 	}
 	if d.js.HasVulnerabilityData() {
 		info.Sources = append(info.Sources, DataSource{Name: vulndb.SourceRetire, UpdatedAt: d.js.UpdatedAt, Entries: len(d.js.Libraries())})
+	}
+	if x := d.exploits; x.Entries() > 0 {
+		info.Sources = append(info.Sources, DataSource{Name: "exploits", UpdatedAt: x.UpdatedAt, Entries: x.Entries()})
 	}
 	s.res.VulnerabilityData = info
 

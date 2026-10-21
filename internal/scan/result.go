@@ -1,6 +1,10 @@
 package scan
 
-import "time"
+import (
+	"time"
+
+	"github.com/theodoros997/cmsrecon/internal/vulndb"
+)
 
 // SchemaVersion is the version of the JSON report format described in
 // docs/json-report.md. It changes only when a field is removed or changes
@@ -12,6 +16,7 @@ const (
 	StatusCompleted   = "completed"   // every check ran
 	StatusStopped     = "stopped"     // a pre-flight check stopped the scan; see Result.Stop
 	StatusInterrupted = "interrupted" // the user interrupted the scan; results are partial
+	StatusTimedOut    = "timed_out"   // the scan reached --max-scan-duration; results are partial
 )
 
 // Stop codes explain why a pre-flight check stopped the scan.
@@ -56,6 +61,8 @@ type Result struct {
 	Plugins             []*Plugin       `json:"plugins"`
 	JSLibraries         []*JSLibrary    `json:"js_libraries"`
 	Users               []*User         `json:"users"`
+	Timthumbs           []*Timthumb     `json:"timthumbs"`
+	Media               []*Media        `json:"media"`
 
 	VulnerabilityData   *DataInfo  `json:"vulnerability_data"`
 	VulnerabilityCounts VulnCounts `json:"vulnerability_counts"`
@@ -186,6 +193,7 @@ type PossibleVulns struct {
 	Critical int    `json:"critical"`
 	High     int    `json:"high"`
 	FixedIn  string `json:"fixed_in,omitempty"` // a version that fixes every one of them; omitted when one has no fix
+	Exploits int    `json:"with_exploits"`      // how many have a public exploit
 	Listed   bool   `json:"listed"`             // they are in vulnerabilities too
 }
 
@@ -235,20 +243,43 @@ const (
 // Vulnerability is a known vulnerability that applies, or may apply, to a
 // detected component.
 type Vulnerability struct {
-	Title      string   `json:"title"`
-	Verdict    string   `json:"verdict"`
-	Severity   string   `json:"severity,omitempty"` // critical, high, medium or low; omitted when unknown
-	CVSS       float64  `json:"cvss,omitempty"`
-	CVSSVector string   `json:"cvss_vector,omitempty"`
-	CVE        []string `json:"cve"`
-	CWE        string   `json:"cwe,omitempty"`
-	Affected   []string `json:"affected_versions"`
-	FixedIn    string   `json:"fixed_in,omitempty"`
-	Unfixed    bool     `json:"unfixed,omitempty"` // no fixed version exists
-	Published  string   `json:"published,omitempty"`
-	Sources    []string `json:"sources"`        // wordfence, cve or retirejs
-	Note       string   `json:"note,omitempty"` // why the verdict is not confirmed, e.g. the sources disagree
-	References []string `json:"references"`
+	Title      string    `json:"title"`
+	Verdict    string    `json:"verdict"`
+	Severity   string    `json:"severity,omitempty"` // critical, high, medium or low; omitted when unknown
+	CVSS       float64   `json:"cvss,omitempty"`
+	CVSSVector string    `json:"cvss_vector,omitempty"`
+	CVE        []string  `json:"cve"`
+	CWE        string    `json:"cwe,omitempty"`
+	Affected   []string  `json:"affected_versions"`
+	FixedIn    string    `json:"fixed_in,omitempty"`
+	Unfixed    bool      `json:"unfixed,omitempty"` // no fixed version exists
+	Published  string    `json:"published,omitempty"`
+	Sources    []string  `json:"sources"`        // wordfence, cve or retirejs
+	Note       string    `json:"note,omitempty"` // why the verdict is not confirmed, e.g. the sources disagree
+	References []string  `json:"references"`
+	Exploits   []Exploit `json:"exploits,omitempty"` // public exploits and proofs of concept, most trustworthy first
+}
+
+// Exploit is a public exploit or proof of concept for one of a
+// vulnerability's CVEs: a link, never downloaded or run.
+type Exploit = vulndb.Exploit
+
+// Timthumb is a copy of the TimThumb image resizing script (-e tt).
+type Timthumb struct {
+	URL             string          `json:"url"`
+	Version         *Version        `json:"version"`
+	Evidence        []Evidence      `json:"evidence"`
+	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
+}
+
+// Media is an uploaded file (-e m).
+type Media struct {
+	ID       int        `json:"id"`
+	URL      string     `json:"url,omitempty"`      // the file; omitted when only its attachment page was seen
+	PageURL  string     `json:"page_url,omitempty"` // its attachment page
+	MimeType string     `json:"mime_type,omitempty"`
+	Title    string     `json:"title,omitempty"`
+	Evidence []Evidence `json:"evidence"`
 }
 
 // DataInfo describes the vulnerability data a scan used.
@@ -323,6 +354,16 @@ func (r *Result) normalize() {
 	r.Users = nonNil(r.Users)
 	for _, u := range r.Users {
 		u.Evidence = nonNil(u.Evidence)
+	}
+	r.Timthumbs = nonNil(r.Timthumbs)
+	for _, t := range r.Timthumbs {
+		t.Evidence = nonNil(t.Evidence)
+		t.Version.normalize()
+		t.Vulnerabilities = normalizeVulns(t.Vulnerabilities)
+	}
+	r.Media = nonNil(r.Media)
+	for _, m := range r.Media {
+		m.Evidence = nonNil(m.Evidence)
 	}
 	if r.VulnerabilityData != nil {
 		r.VulnerabilityData.Sources = nonNil(r.VulnerabilityData.Sources)

@@ -14,7 +14,7 @@ import (
 
 // UpdateSources are the data sources "cmsrecon update" knows, in the order
 // they run.
-var UpdateSources = []string{"wordfence", "cve", "wporg", "retirejs"}
+var UpdateSources = []string{"wordfence", "cve", "wporg", "retirejs", "exploits", "corehashes"}
 
 // UpdateOptions is a validated update configuration.
 type UpdateOptions struct {
@@ -97,10 +97,17 @@ Sources (all by default):
   wporg       WordPress.org: popular plugins and themes with their latest
               versions, and every plugin and theme slug (for -e ap, at)
   retirejs    retire.js: vulnerable JavaScript libraries
+  exploits    Public exploits and proofs of concept by CVE, from Exploit-DB,
+              Metasploit, Nuclei templates and PoC-in-GitHub (about 30 MB).
+              Scans link to them; cmsrecon never downloads or runs them
+  corehashes  WordPress.org checksums of every WordPress release since 3.0,
+              to tell the core version from file hashes. The first update
+              asks for each release (several hundred small requests); later
+              ones only for new releases
 
 Options:
       --data-dir DIR          Where to store the data (default: <user cache dir>/cmsrecon)
-      --sources LIST          Comma-separated sources to update (default "wordfence,cve,wporg,retirejs")
+      --sources LIST          Comma-separated sources to update (default: all of them)
       --wordfence-key KEY     Wordfence Intelligence API key (default: $WORDFENCE_API_KEY)
       --proxy URL             Proxy for the downloads (default: the HTTPS_PROXY environment variable)
       --timeout DURATION      How long to wait for a server to answer (default 60s)

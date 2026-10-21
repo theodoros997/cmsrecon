@@ -29,8 +29,12 @@ func TestParseEnumeration(t *testing.T) {
 		{spec: "u9-3", wantErr: "invalid ID range"},
 		{spec: "ux", wantErr: "invalid ID range"},
 		{spec: "u1-", wantErr: "invalid ID range"},
-		{spec: "m", wantErr: "not supported yet"},
-		{spec: "tt", wantErr: "not supported yet"},
+		{spec: "m", want: Enumeration{Media: &DefaultMediaIDs}},
+		{spec: "m5-500,tt", want: Enumeration{Media: &IDRange{From: 5, To: 500}, Timthumbs: true}},
+		{spec: "m0", wantErr: "invalid ID range"},
+		{spec: "m1-100000", want: Enumeration{Media: &IDRange{From: 1, To: 100000}}},
+		{spec: "m1-100001", wantErr: "at most 100000 IDs"},
+		{spec: "mx", wantErr: "invalid ID range"},
 		{spec: "bogus", wantErr: "unknown choice"},
 	}
 	for _, tt := range tests {

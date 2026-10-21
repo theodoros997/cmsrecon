@@ -1,6 +1,8 @@
 package scan
 
 import (
+	"slices"
+
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
 )
 
@@ -15,7 +17,7 @@ func (s *Scanner) matchVulnerabilities() {
 		// unknown version, which says nothing; only a known version is
 		// matched.
 		if d.Version != "" {
-			r.CoreVulnerabilities = toVulns(db.Match(vulndb.KindCore, vulndb.CoreSlug, d))
+			r.CoreVulnerabilities = s.toVulns(db.Match(vulndb.KindCore, vulndb.CoreSlug, d))
 		} else if !db.Empty() {
 			s.res.Notices = append(s.res.Notices, "The WordPress version is unknown, so core vulnerabilities were not matched.")
 		}
@@ -33,10 +35,13 @@ func (s *Scanner) matchVulnerabilities() {
 		p.Vulnerabilities, p.Possible = s.splitPossible(db.Match(vulndb.KindPlugin, p.Slug, detected(p.Version)))
 		possible += p.Possible.count()
 	}
+	for _, t := range r.Timthumbs {
+		t.Vulnerabilities = s.timthumbVulns(t.Version)
+	}
 	for _, l := range r.JSLibraries {
 		// Library vulnerabilities only apply to a known version.
 		if d := detected(l.Version); d.Version != "" {
-			l.Vulnerabilities = toVulns(vulndb.MatchAdvisories(s.data.js.Advisories(l.Name), d))
+			l.Vulnerabilities = s.toVulns(vulndb.MatchAdvisories(s.data.js.Advisories(l.Name), d))
 		}
 	}
 
@@ -63,6 +68,9 @@ func (s *Scanner) matchVulnerabilities() {
 	for _, l := range r.JSLibraries {
 		count(l.Vulnerabilities)
 	}
+	for _, t := range r.Timthumbs {
+		count(t.Vulnerabilities)
+	}
 	if !s.opts.ShowPossible {
 		c.Possible = possible // they are not in the lists, only summarized
 	}
@@ -87,6 +95,9 @@ func (s *Scanner) splitPossible(ms []vulndb.Match) ([]Vulnerability, *PossibleVu
 			sum = &PossibleVulns{Listed: s.opts.ShowPossible}
 		}
 		sum.Count++
+		if len(s.exploitsFor(m.Advisory.CVE, m.Advisory.References)) > 0 {
+			sum.Exploits++
+		}
 		switch m.Advisory.Severity {
 		case SeverityCritical:
 			sum.Critical++
@@ -110,7 +121,7 @@ func (s *Scanner) splitPossible(ms []vulndb.Match) ([]Vulnerability, *PossibleVu
 	if sum != nil && !allFixed {
 		sum.FixedIn = ""
 	}
-	return toVulns(keep), sum
+	return s.toVulns(keep), sum
 }
 
 func (p *PossibleVulns) count() int {
@@ -138,14 +149,28 @@ func detected(v *Version) vulndb.Detected {
 	return d
 }
 
-func toVulns(ms []vulndb.Match) []Vulnerability {
+// exploitsFor returns the public exploits of a vulnerability: those the
+// exploit index lists for its CVEs, and its references that are exploits.
+func (s *Scanner) exploitsFor(cves, refs []string) []Exploit {
+	out := s.data.exploits.Lookup(cves)
+	for _, ref := range refs {
+		e, ok := vulndb.ExploitFromReference(ref)
+		if ok && !slices.ContainsFunc(out, func(o Exploit) bool { return o.URL == e.URL }) {
+			out = append(out, e)
+		}
+	}
+	vulndb.SortExploits(out)
+	return out
+}
+
+func (s *Scanner) toVulns(ms []vulndb.Match) []Vulnerability {
 	out := make([]Vulnerability, 0, len(ms))
 	for _, m := range ms {
 		a := m.Advisory
 		v := Vulnerability{
 			Title: a.Title, Verdict: m.Verdict, Severity: a.Severity, CVSS: a.CVSS, CVSSVector: a.CVSSVector,
 			CVE: a.CVE, CWE: a.CWE, Affected: m.Affected, FixedIn: m.FixedIn, Unfixed: a.Unfixed && m.FixedIn == "",
-			Published: a.Published, Note: m.Note, References: a.References,
+			Published: a.Published, Note: m.Note, References: a.References, Exploits: s.exploitsFor(a.CVE, a.References),
 		}
 		for _, src := range a.Sources {
 			v.Sources = append(v.Sources, src.Source)

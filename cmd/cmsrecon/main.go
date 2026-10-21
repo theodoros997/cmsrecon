@@ -29,6 +29,7 @@ const (
 	exitError       = 1   // cmsrecon itself failed, e.g. the report could not be written
 	exitUsage       = 2   // invalid command line
 	exitStopped     = 3   // a pre-flight check stopped the scan; the report says why
+	exitTimedOut    = 4   // the scan reached --max-scan-duration; the partial report is still written
 	exitVulnerable  = 5   // the scan completed and found confirmed or likely vulnerabilities, as WPScan's 5
 	exitInterrupted = 130 // interrupted with Ctrl-C; the partial report is still written
 )
@@ -153,6 +154,8 @@ func scanExit(res *scan.Result) int {
 		return exitStopped
 	case res.Status == scan.StatusInterrupted:
 		return exitInterrupted
+	case res.Status == scan.StatusTimedOut:
+		return exitTimedOut
 	case res.VulnerabilityCounts.Confirmed+res.VulnerabilityCounts.Likely > 0:
 		return exitVulnerable
 	}
@@ -185,6 +188,9 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case r.Err != nil:
 			fmt.Fprintf(stdout, "[!] %s failed: %v\n", update.Label(r.Source), r.Err)
+			if r.Summary != "" {
+				fmt.Fprintf(stdout, "[i] %s stored what it could: %s\n", update.Label(r.Source), r.Summary)
+			}
 		case r.Skipped:
 			fmt.Fprintf(stdout, "[i] %s skipped: %s\n", update.Label(r.Source), r.Summary)
 		default:
@@ -231,6 +237,12 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 		users = "author IDs " + e.Users.String()
 	}
 	row("Users", users)
+	media := "no"
+	if e.Media != nil {
+		media = "the REST API, or attachment IDs " + e.Media.String() + " when it is closed"
+	}
+	row("Media", media)
+	row("Timthumbs", yesNo(e.Timthumbs))
 	row("Config backups", yesNo(e.ConfigBackups))
 	row("DB exports", yesNo(e.DBExports))
 	row("Backup folders", yesNo(e.BackupFolders))
@@ -240,6 +252,9 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 		concurrency = fmt.Sprintf("1 thread, %s between requests", o.Throttle)
 	}
 	row("Concurrency", concurrency)
+	if o.MaxScanDuration > 0 {
+		row("Max duration", o.MaxScanDuration.String())
+	}
 	if o.Proxy != nil {
 		row("Proxy", o.Proxy.Redacted())
 	}

@@ -62,6 +62,12 @@ func sampleResult() *scan.Result {
 				CVSS: 9.8, CVE: []string{"CVE-2020-35489"}, CWE: "CWE-434", Affected: []string{"<= 5.3.1"}, FixedIn: "5.3.2",
 				Published: "2020-12-17", Sources: []string{"wordfence", "cve"},
 				References: []string{"https://www.wordfence.com/threat-intel/vulnerabilities/id/a1", "https://contactform7.com/"},
+				Exploits: []scan.Exploit{
+					{Source: "metasploit", URL: "https://github.com/rapid7/metasploit-framework/blob/master/modules/exploits/multi/http/wp_cf7_upload.rb", Title: "CF7 upload", Ref: "exploit/multi/http/wp_cf7_upload"},
+					{Source: "exploitdb", URL: "https://www.exploit-db.com/exploits/49294", Title: "Contact Form 7 5.3.1 - Unrestricted File Upload", Verified: true},
+					{Source: "github", URL: "https://github.com/someone/CVE-2020-35489", Title: "someone/CVE-2020-35489"},
+					{Source: "github", URL: "https://github.com/other/cf7-poc", Title: "other/cf7-poc"},
+				},
 			}},
 			Possible:    &scan.PossibleVulns{Count: 1, FixedIn: "5.0"},
 			LastUpdated: "2026-09-30",
@@ -76,6 +82,17 @@ func sampleResult() *scan.Result {
 		Users: []*scan.User{
 			{ID: 1, Username: "admin", DisplayName: "Site Admin", Confidence: 100, Evidence: ev},
 			{DisplayName: "Guest Writer", Confidence: 60, Evidence: ev},
+		},
+		Timthumbs: []*scan.Timthumb{{
+			URL:      "https://example.com/wp-content/themes/old/timthumb.php",
+			Version:  &scan.Version{Number: "1.33", Confidence: 100, Candidates: []scan.Candidate{{Number: "1.33", Confidence: 100}}, Evidence: ev},
+			Evidence: ev,
+			Vulnerabilities: []scan.Vulnerability{{Title: "TimThumb < 2.0 - Remote Code Execution", Verdict: scan.VerdictConfirmed, Severity: scan.SeverityCritical,
+				CVE: []string{"CVE-2011-4106"}, Affected: []string{"< 2.0"}, FixedIn: "2.0", Sources: []string{"cmsrecon"}, References: []string{}}},
+		}},
+		Media: []*scan.Media{
+			{ID: 4, URL: "https://example.com/wp-content/uploads/2026/10/photo.jpg", MimeType: "image/jpeg", Evidence: ev},
+			{ID: 9, URL: "https://example.com/wp-content/uploads/2026/10/salaries.xlsx", MimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Evidence: ev},
 		},
 		VulnerabilityData: &scan.DataInfo{Directory: "/data", Sources: []scan.DataSource{
 			{Name: "wordfence", UpdatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC), Entries: 30000},
@@ -116,8 +133,10 @@ func TestJSONShape(t *testing.T) {
 		want []string
 	}{
 		{"top level", doc, []string{"core_vulnerabilities", "detection_mode", "errors", "finished_at", "interesting_findings", "js_libraries",
-			"main_theme", "notices", "plugins", "schema_version", "started_at", "stats", "status", "stop", "target", "themes", "tool",
+			"main_theme", "media", "notices", "plugins", "schema_version", "started_at", "stats", "status", "stop", "target", "themes", "timthumbs", "tool",
 			"users", "version", "vulnerability_counts", "vulnerability_data", "web_server", "wordpress"}},
+		{"timthumb", first(doc["timthumbs"]), []string{"evidence", "url", "version", "vulnerabilities"}},
+		{"media", first(doc["media"]), []string{"evidence", "id", "mime_type", "url"}},
 		{"tool", obj(doc["tool"]), []string{"name", "user_agent", "version"}},
 		{"target", obj(doc["target"]), []string{"effective_url", "redirects", "scope", "url"}},
 		{"redirect", first(obj(doc["target"])["redirects"]), []string{"followed", "from", "reason", "status", "to"}},
@@ -130,10 +149,11 @@ func TestJSONShape(t *testing.T) {
 		{"candidate", first(obj(doc["version"])["candidates"]), []string{"confidence", "number"}},
 		{"main_theme", obj(doc["main_theme"]), []string{"confidence", "evidence", "location", "name", "parent", "slug", "style_url", "version", "vulnerabilities", "warnings"}},
 		{"plugin", first(doc["plugins"]), []string{"confidence", "evidence", "last_updated", "location", "name", "possible_vulnerabilities", "readme_url", "slug", "version", "vulnerabilities", "warnings"}},
-		{"possible_vulnerabilities", obj(first(doc["plugins"])["possible_vulnerabilities"]), []string{"count", "critical", "fixed_in", "high", "listed"}},
+		{"possible_vulnerabilities", obj(first(doc["plugins"])["possible_vulnerabilities"]), []string{"count", "critical", "fixed_in", "high", "listed", "with_exploits"}},
 		{"plugin version", obj(first(doc["plugins"])["version"]), []string{"candidates", "confidence", "evidence", "latest", "number", "outdated"}},
-		{"vulnerability", first(first(doc["plugins"])["vulnerabilities"]), []string{"affected_versions", "cve", "cvss", "cwe", "fixed_in",
+		{"vulnerability", first(first(doc["plugins"])["vulnerabilities"]), []string{"affected_versions", "cve", "cvss", "cwe", "exploits", "fixed_in",
 			"published", "references", "severity", "sources", "title", "verdict"}},
+		{"exploit", first(first(first(doc["plugins"])["vulnerabilities"])["exploits"]), []string{"ref", "source", "title", "url"}},
 		{"js library", first(doc["js_libraries"]), []string{"name", "urls", "version", "vulnerabilities"}},
 		{"user", first(doc["users"]), []string{"confidence", "display_name", "evidence", "id", "username"}},
 		{"vulnerability_data", obj(doc["vulnerability_data"]), []string{"directory", "sources"}},
@@ -187,6 +207,13 @@ func TestCLIReport(t *testing.T) {
 		"Last updated: 2026-09-30 (on WordPress.org)", "[!] Directory listing is enabled: https://example.com/wp-content/plugins/contact-form-7/ (12 entries)",
 		"Possible vulnerabilities: 3 (1 critical), all fixed in 2.5 (not listed: the version is unknown; --possible lists them)",
 		"(the possible ones are counted, not listed: --possible lists them)",
+		"Public exploits: 1 Metasploit module, 1 Exploit-DB entry (1 verified), 2 GitHub repositories (unreviewed)",
+		"Metasploit: exploit/multi/http/wp_cf7_upload - https://github.com/rapid7/metasploit-framework/blob/master/modules/exploits/multi/http/wp_cf7_upload.rb",
+		"Exploit-DB, verified: Contact Form 7 5.3.1 - Unrestricted File Upload - https://www.exploit-db.com/exploits/49294",
+		"GitHub repository: https://github.com/someone/CVE-2020-35489", "1 more: -v lists them",
+		"1 of the confirmed and likely ones has a public exploit or proof of concept",
+		"Timthumbs (1)", "[!] https://example.com/wp-content/themes/old/timthumb.php", "Version: 1.33 (confidence 100%)", "[CRITICAL] TimThumb < 2.0 - Remote Code Execution",
+		"Media (2): 1 document, 1 image", "[i] ID 9: https://example.com/wp-content/uploads/2026/10/salaries.xlsx",
 		"JavaScript libraries (1)", "[!] jquery 1.12.4", "[MEDIUM] Regex in its jQuery.htmlPrefilter",
 		"Users (2)", "admin (ID 1)", "Display name: Site Admin", `"Guest Writer" (display name only; not a username)`,
 		"2 confirmed, 4 possible", "Data: Wordfence (2026-10-19)",
@@ -208,6 +235,9 @@ func TestCLIReport(t *testing.T) {
 	}
 	if !strings.Contains(colored.String(), "\x1b[") {
 		t.Error("coloured report has no ANSI sequences")
+	}
+	if !strings.Contains(verbose.String(), "https://github.com/other/cf7-poc") || strings.Contains(plain.String(), "https://github.com/other/cf7-poc") {
+		t.Error("-v lists every exploit; the default report the first three")
 	}
 	if strings.Contains(verbose.String(), "Old XSS") {
 		t.Error("-v must not list the possible vulnerabilities: --possible does")
