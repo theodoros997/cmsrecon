@@ -182,6 +182,10 @@ type Theme struct {
 	Warnings        []string        `json:"warnings"`
 	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
 	Possible        *PossibleVulns  `json:"possible_vulnerabilities,omitempty"`
+	// Exploits are Exploit-DB entries that name the theme, and a version
+	// that can include the detected one, but no CVE: matched by name, so
+	// they may not apply.
+	Exploits []Exploit `json:"exploits,omitempty"`
 }
 
 // PossibleVulns summarizes the vulnerabilities that may apply to a
@@ -211,6 +215,10 @@ type Plugin struct {
 	Warnings        []string        `json:"warnings"`
 	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
 	Possible        *PossibleVulns  `json:"possible_vulnerabilities,omitempty"`
+	// Exploits are Exploit-DB entries that name the plugin, and a version
+	// that can include the detected one, but no CVE: matched by name, so
+	// they may not apply.
+	Exploits []Exploit `json:"exploits,omitempty"`
 }
 
 // JSLibrary is a JavaScript library the scanned pages load.

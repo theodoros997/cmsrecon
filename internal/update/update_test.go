@@ -35,7 +35,8 @@ const retireRepo = `{"jquery": {"extractors": {"filename": ["jquery-(§§version
 
 const exploitDBCSV = "id,file,description,date_published,author,type,platform,port,date_added,date_updated,verified,codes,tags,aliases,screenshot_url,application_url,source_url\n" +
 	`49294,exploits/php/webapps/49294.py,"WordPress Plugin Contact Form 7 5.3.1 - Unrestricted File Upload",2020-12-21,x,webapps,php,,2020-12-21,2020-12-21,1,CVE-2020-35489,,,,,` + "\n" +
-	`50000,exploits/php/webapps/50000.txt,"Something without a CVE",2021-01-01,x,webapps,php,,2021-01-01,2021-01-01,0,OSVDB-1,,,,,` + "\n"
+	`50000,exploits/php/webapps/50000.txt,"Something without a CVE",2021-01-01,x,webapps,php,,2021-01-01,2021-01-01,0,OSVDB-1,,,,,` + "\n" +
+	`50001,exploits/php/webapps/50001.txt,"WordPress Plugin Total Upkeep 1.14.9 - Backup Download",2021-01-01,x,webapps,php,,2021-01-01,2021-01-01,0,,,,,,` + "\n"
 
 const metasploitJSON = `{"exploit_multi/http/wp_cf7": {"name": "CF7 upload", "fullname": "exploit/multi/http/wp_cf7", "type": "exploit",
  "path": "/modules/exploits/multi/http/wp_cf7.rb", "references": ["CVE-2020-35489", "URL-https://example.com"]},
@@ -242,6 +243,9 @@ func TestRunDownloadsEverySource(t *testing.T) {
 	}
 	if es := x.Lookup([]string{"CVE-2020-35489"}); !es[1].Verified || es[0].Ref != "exploit/multi/http/wp_cf7" {
 		t.Errorf("exploit details = %+v", es)
+	}
+	if es := x.ForItem("plugin", []string{"total-upkeep"}, "1.14.9"); len(es) != 1 {
+		t.Errorf("WordPress exploits without a CVE = %+v", x.NoCVE)
 	}
 
 	hashes, err := corehash.Load(dir)

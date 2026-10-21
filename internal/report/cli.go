@@ -328,6 +328,34 @@ func (p *printer) plugins(ps []*scan.Plugin) {
 			}
 		}
 		p.vulns(pl.Vulnerabilities, pl.Possible, pl.Version, "")
+		p.namedExploits(pl.Exploits, "plugin", pl.Version, "")
+	}
+}
+
+// namedExploits lists the Exploit-DB entries that name a plugin or theme
+// but no CVE: they were matched by name and version, so they may not apply.
+func (p *printer) namedExploits(es []scan.Exploit, what string, v *scan.Version, indent string) {
+	if len(es) == 0 {
+		return
+	}
+	check := "check that they apply"
+	if v != nil && v.Number != "" {
+		check += " to " + v.Number
+	}
+	entries := fmt.Sprintf("%d Exploit-DB entries", len(es))
+	if len(es) == 1 {
+		entries = "1 Exploit-DB entry"
+	}
+	p.detail("%s%s %s (%s)", indent, p.style(bold, "Exploits that name this "+what+" but no CVE:"), entries, check)
+	n := len(es)
+	if !p.o.Verbose && n > 3 {
+		n = 3
+	}
+	for _, e := range es[:n] {
+		p.detail("%s  %s", indent, exploitLine(e))
+	}
+	if n < len(es) {
+		p.detail("%s  %d more: -v lists them", indent, len(es)-n)
 	}
 }
 
@@ -862,6 +890,7 @@ func (p *printer) themeDetails(t *scan.Theme, indent string) {
 		}
 	}
 	p.vulns(t.Vulnerabilities, t.Possible, t.Version, indent)
+	p.namedExploits(t.Exploits, "theme", t.Version, indent)
 }
 
 func (p *printer) errors(errs []scan.RequestError) {

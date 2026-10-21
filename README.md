@@ -52,7 +52,21 @@ cmsrecon update -h
 
 Without `cmsrecon update`, a scan still detects plugins, themes, libraries and versions with the lists built into cmsrecon, but matches no vulnerabilities and says so.
 
-`cmsrecon update` stores its data in `--data-dir` (default: `<user cache dir>/cmsrecon`). Each source is replaced atomically and independently, so a source that fails keeps its previous data. The CVE List is a daily release of about 500 MB; it is downloaded only when a new release is out. The downloads use the `HTTPS_PROXY` environment variable or `--proxy`.
+`cmsrecon update` stores its data in `--data-dir` (default: `<user cache dir>/cmsrecon`, which is `C:\Users\<you>\AppData\Local\cmsrecon` on Windows and `~/.cache/cmsrecon` on Linux). Each source is replaced atomically and independently, so a source that fails keeps its previous data. The downloads use the `HTTPS_PROXY` environment variable or `--proxy`. [Disk space and downloads](#disk-space-and-downloads) says how much each source takes.
+
+While a scan or an update runs, a status line on stderr shows what it is doing, how long it has been running and how many requests it sent, and each step that finishes leaves a line with its result:
+
+```
+Scanning https://example.com/
+[+] Loading data: Wordfence, CVE List, WordPress.org, retire.js, public exploits, core checksums (310ms)
+[+] Pre-flight: WordPress at https://example.com/ (nginx) (420ms)
+[+] WordPress version: 6.4.2 (confidence 100%) (1.9s)
+[+] Main theme: astra 4.6.1 (240ms)
+[+] Interesting findings: 3 found (1 high, 1 medium) (4.1s)
+[/] 6.2s, 141 requests | Plugins (9/12 checked), Users, JavaScript libraries
+```
+
+It only appears when stderr is a terminal; `--no-progress` turns it off.
 
 ### How plugins and themes are found
 
@@ -111,6 +125,10 @@ After `cmsrecon update`, each vulnerability lists the public exploits for its CV
 |       6 more: -v lists them
 ```
 
+How it works: `cmsrecon update` downloads four public indexes (Exploit-DB's list of exploits, the Metasploit Framework's module list, the list of Nuclei templates and the PoC-in-GitHub list) and keeps, for every CVE they name, a link to each exploit. A scan then looks up the CVEs of each vulnerability it matched. Nothing about exploits is fetched during a scan.
+
+The matching is by CVE, which works well for Metasploit (117 of its 127 WordPress modules name one) but misses most of Exploit-DB: only about a third of its WordPress exploits name a CVE. Those that do not are matched by name instead: an entry titled "WordPress Plugin Total Upkeep 1.14.9 - …" is shown under the plugin whose slug, readme name or WordPress.org name it names, word for word, when its version can include the detected one. The name has to be followed by a version, so "Contact Form 7 to Database Extension" is not taken for Contact Form 7, and words must match exactly, so the old "wp-FileManager" plugin is not taken for "WP File Manager". These show apart from the vulnerabilities, as "Exploits that name this plugin but no CVE", because a name match is weaker than a CVE.
+
 These are links only: cmsrecon never downloads or runs exploit code. GitHub repositories are unreviewed, and some fake proofs of concept have carried malware, so read any code before running it, and only against systems you are authorized to test.
 
 ### Exit codes
@@ -159,6 +177,21 @@ These are links only: cmsrecon never downloads or runs exploit code. GitHub repo
 Without a Wordfence key, the vulnerabilities come from the CVE List alone. Its records name the affected plugin less reliably (cmsrecon reads the slug from package names, wordpress.org, Trac, Patchstack, WPScan and Wordfence links, and as a last resort from the product name), so expect fewer matches.
 
 Data from each source remains subject to that provider's terms.
+
+## Disk space and downloads
+
+The data directory holds about 10 to 25 MB once everything is downloaded; `cmsrecon update` prints the size of each source and the total. The first full update downloads about 600 MB, most of it the CVE List, and needs about 500 MB of free space while the CVE List is read: its archive is saved to the data directory, read, then deleted.
+
+| Source | Downloaded | Kept on disk | When |
+|---|---|---|---|
+| Wordfence (`wordfence`) | The whole feed, read as it arrives and not saved | A few MB | Every update |
+| CVE List (`cve`) | About 500 MB, saved while it is read | A few MB: the WordPress records only | Only when a new daily release is out |
+| WordPress.org (`wporg`) | About 15 MB | About 2 MB | Every update |
+| retire.js (`retirejs`) | 0.6 MB | 0.6 MB (measured) | Every update |
+| Public exploits (`exploits`) | About 30 MB | 1.3 MB (measured) | Every update |
+| Core checksums (`corehashes`) | The first time several hundred small requests; then one per new release | A few MB | New releases only |
+
+The figures marked measured come from a real update; the others are estimates, and the update's own output gives the real ones. To save bandwidth, leave the CVE List out once you have a Wordfence key, since it is then only a cross-check: `cmsrecon update --sources wordfence,wporg,retirejs,exploits,corehashes`. Deleting the data directory is safe: the next update downloads everything again.
 
 ## Roadmap
 

@@ -2,9 +2,11 @@ package scan
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
@@ -89,7 +91,9 @@ func (s *Scanner) enumerateTimthumbs(ctx context.Context) []*Timthumb {
 	urls = uniqueStrings(urls)
 
 	found := make([]*Timthumb, len(urls))
+	var checked atomic.Int32
 	s.parallel(ctx, len(urls), func(i int) {
+		defer func() { s.steps().Update(stepTimthumbs, fmt.Sprintf("%d/%d paths", checked.Add(1), len(urls))) }()
 		res := s.do(ctx, httpclient.Request{URL: urls[i], MaxBody: 16 << 10})
 		if res == nil || res.IsRedirect() {
 			return

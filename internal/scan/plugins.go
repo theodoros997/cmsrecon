@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/theodoros997/cmsrecon/internal/cli"
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
@@ -53,6 +54,7 @@ func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 	prefix := s.plugins.Path
 	mode := s.opts.PluginsDetection
 	if mode.Discover() {
+		s.steps().Update(stepPlugins, "reading pages")
 		pages := s.discoveryPages(ctx)
 		s.pluginsFromPages(set, pages, prefix, core)
 		s.pluginsFromSignatures(set, pages)
@@ -80,9 +82,11 @@ func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 
 	comps := set.list()
 	if s.aggressive() {
+		var read atomic.Int32
 		s.parallel(ctx, len(comps), func(i int) {
 			s.readReadme(ctx, set, comps[i], s.plugins)
 			s.verify(ctx, set, comps[i], s.plugins)
+			s.steps().Update(stepPlugins, fmt.Sprintf("%d/%d checked", read.Add(1), len(comps)))
 		})
 	}
 	var out []*Plugin

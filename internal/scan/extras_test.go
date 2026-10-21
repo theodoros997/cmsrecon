@@ -208,10 +208,18 @@ func TestExploitsAttachedToVulnerabilities(t *testing.T) {
 	x.Add("CVE-2020-35489", vulndb.Exploit{Source: vulndb.ExploitGitHub, URL: "https://github.com/a/poc", Title: "a/poc"})
 	x.Add("CVE-2020-35489", vulndb.Exploit{Source: vulndb.ExploitMetasploit, URL: "https://github.com/rapid7/metasploit-framework/blob/master/modules/exploits/x.rb", Ref: "exploit/x"})
 	x.Add("CVE-2020-11022", vulndb.Exploit{Source: vulndb.ExploitDB, URL: "https://www.exploit-db.com/exploits/49766"})
+	x.NoCVE = []vulndb.Exploit{
+		{Source: vulndb.ExploitDB, URL: "https://www.exploit-db.com/exploits/1", Title: "WordPress Plugin Contact Form 7 5.3.1 - Something"},
+		{Source: vulndb.ExploitDB, URL: "https://www.exploit-db.com/exploits/2", Title: "WordPress Plugin Contact Form 7 5.2 - Fixed since"},
+		{Source: vulndb.ExploitDB, URL: "https://www.exploit-db.com/exploits/3", Title: "WordPress Plugin Contact Form 7 to Database Extension 2.0 - Another plugin"},
+	}
 	if err := vulndb.WriteExploits(filepath.Join(o.DataDir, vulndb.ExploitsFile), x); err != nil {
 		t.Fatal(err)
 	}
 	r := runScan(t, o)
+	if cf7 := pluginBySlug(r, "contact-form-7"); cf7 == nil || len(cf7.Exploits) != 1 || cf7.Exploits[0].URL != "https://www.exploit-db.com/exploits/1" {
+		t.Errorf("exploits named after contact-form-7 5.3.1 = %+v", cf7)
+	}
 
 	cf7 := pluginBySlug(r, "contact-form-7")
 	if cf7 == nil || len(cf7.Vulnerabilities) != 1 {

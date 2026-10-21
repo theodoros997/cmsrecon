@@ -11,13 +11,12 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"text/tabwriter"
-	"time"
 
 	"github.com/theodoros997/cmsrecon/internal/buildinfo"
 	"github.com/theodoros997/cmsrecon/internal/cli"
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
+	"github.com/theodoros997/cmsrecon/internal/progress"
 	"github.com/theodoros997/cmsrecon/internal/report"
 	"github.com/theodoros997/cmsrecon/internal/scan"
 	"github.com/theodoros997/cmsrecon/internal/update"
@@ -108,14 +107,20 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	scanner := scan.New(opts, client)
-	var prog *progress
-	// The progress line needs a terminal that understands escape codes.
-	if report.ColorEnabled(stderr) {
-		prog = &progress{w: stderr}
-		scanner.Progress = prog.update
+	// The live status needs a terminal that understands escape codes.
+	var live *progress.Terminal
+	if !opts.NoProgress && report.ColorEnabled(stderr) {
+		live = progress.NewTerminal(stderr, !opts.NoColor, func() string {
+			return plural(int(client.Stats().Requests), "request")
+		})
+		scanner.Steps = live
+		fmt.Fprintf(stderr, "Scanning %s\n", opts.Target)
 	}
 	res := scanner.Run(ctx, nil)
-	prog.clear()
+	if live != nil {
+		live.Close()
+		fmt.Fprintln(stderr)
+	}
 
 	// The CLI report on stdout carries the notices; anywhere else the user
 	// would not see them, so print them now.
@@ -174,7 +179,7 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	fmt.Fprintf(stderr, "Updating the data in %s\n", o.DataDir)
-	results, err := update.Run(ctx, update.Options{
+	uo := update.Options{
 		DataDir:      o.DataDir,
 		Sources:      o.Sources,
 		WordfenceKey: o.WordfenceKey,
@@ -183,7 +188,36 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		Timeout:      o.Timeout,
 		Endpoints:    update.DefaultEndpoints,
 		Log:          stderr,
-	})
+	}
+	var live *progress.Terminal
+	if report.ColorEnabled(stderr) {
+		live = progress.NewTerminal(stderr, true, nil)
+		live.ShowDurations(false) // the results say how long each source took
+		uo.Steps = live
+	}
+	results, err := update.Run(ctx, uo)
+	if live != nil {
+		live.Close()
+	}
+	// The live lines already said what happened to each source when they
+	// share the terminal with stdout.
+	if live == nil || !report.ColorEnabled(stdout) {
+		printUpdateResults(stdout, results)
+	}
+	if size, files := dataSize(o.DataDir); files > 0 {
+		fmt.Fprintf(stdout, "[i] %s holds %s in %d files\n", o.DataDir, update.FormatSize(size), files)
+	}
+	switch {
+	case ctx.Err() != nil:
+		fmt.Fprintln(stderr, "Interrupted; the sources not finished keep their previous data.")
+		return exitInterrupted
+	case err != nil:
+		return exitError
+	}
+	return exitOK
+}
+
+func printUpdateResults(stdout io.Writer, results []update.Result) {
 	for _, r := range results {
 		switch {
 		case r.Err != nil:
@@ -197,14 +231,23 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "[+] %s: %s\n", update.Label(r.Source), r.Summary)
 		}
 	}
-	switch {
-	case ctx.Err() != nil:
-		fmt.Fprintln(stderr, "Interrupted; the sources not finished keep their previous data.")
-		return exitInterrupted
-	case err != nil:
-		return exitError
+}
+
+// dataSize adds up the files in the data directory.
+func dataSize(dir string) (int64, int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, 0
 	}
-	return exitOK
+	var total int64
+	n := 0
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && info.Mode().IsRegular() && !strings.HasPrefix(e.Name(), ".") {
+			total += info.Size()
+			n++
+		}
+	}
+	return total, n
 }
 
 // printPlan describes what a scan with these options would do.
@@ -295,33 +338,10 @@ func yesNo(b bool) string {
 	return "no"
 }
 
-// progress shows how far brute-force runs are on one terminal line.
-type progress struct {
-	w     io.Writer
-	mu    sync.Mutex
-	last  time.Time
-	shown bool
-}
-
-func (p *progress) update(label string, done, total int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if done < total && time.Since(p.last) < 200*time.Millisecond {
-		return
+// plural says "1 request" or "12 requests".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
 	}
-	p.last = time.Now()
-	p.shown = true
-	fmt.Fprintf(p.w, "\r\x1b[K[i] %s: %d/%d", label, done, total)
-}
-
-// clear removes the progress line; it is safe on a nil progress.
-func (p *progress) clear() {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.shown {
-		fmt.Fprint(p.w, "\r\x1b[K")
-	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

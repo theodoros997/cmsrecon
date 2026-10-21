@@ -74,13 +74,14 @@ type Lists struct {
 
 	latest  map[string]string // kind/slug -> latest version
 	updated map[string]string // kind/slug -> last updated, YYYY-MM-DD
+	names   map[string]string // kind/slug -> name on WordPress.org
 	known   map[string]bool   // kind/slug of every listed slug
 	popular map[string]bool   // kind/slug of the popular and premium slugs
 }
 
 // Builtin returns the lists compiled into cmsrecon.
 func Builtin() *Lists {
-	l := &Lists{latest: map[string]string{}, updated: map[string]string{}, known: map[string]bool{}, popular: map[string]bool{}}
+	l := &Lists{latest: map[string]string{}, updated: map[string]string{}, names: map[string]string{}, known: map[string]bool{}, popular: map[string]bool{}}
 	l.PopularPlugins = mergeSlugs(lines(builtinPopularPlugins), lines(builtinPremiumPlugins))
 	l.PopularThemes = mergeSlugs(lines(builtinPopularThemes), lines(builtinPremiumThemes))
 	l.index()
@@ -110,6 +111,9 @@ func Load(dir string) (*Lists, error) {
 				}
 				if it.LastUpdated != "" {
 					l.updated[k] = it.LastUpdated
+				}
+				if it.Name != "" {
+					l.names[k] = it.Name
 				}
 			}
 		}
@@ -160,6 +164,12 @@ func (l *Lists) Latest(kind, slug string) string {
 // WordPress.org (YYYY-MM-DD), or "" when it is not in the downloaded data.
 func (l *Lists) LastUpdated(kind, slug string) string {
 	return l.updated[kind+"/"+strings.ToLower(slug)]
+}
+
+// Name returns the name WordPress.org gives a plugin or theme, or "" when
+// it is not in the downloaded data.
+func (l *Lists) Name(kind, slug string) string {
+	return l.names[kind+"/"+strings.ToLower(slug)]
 }
 
 // Popular reports whether a slug is in the popular or premium list.

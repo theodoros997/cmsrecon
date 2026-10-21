@@ -189,6 +189,7 @@ With an unknown version, an advisory with no lower bound that reaches the latest
 | [Exploit-DB](https://gitlab.com/exploit-database/exploitdb) `files_exploits.csv` | Exploits that name the CVE, with Exploit-DB's "verified" mark | Verified ones were tested by Exploit-DB |
 | [Nuclei templates](https://github.com/projectdiscovery/nuclei-templates) `cves.json` | Detection templates, to confirm the vulnerability with `nuclei -id CVE-…` | Reviewed by ProjectDiscovery |
 | Advisory references | Exploit-DB and Packet Storm links among the vulnerability's references | As the source |
+| Exploit-DB entries without a CVE | About 870 WordPress plugin and theme exploits (two thirds of Exploit-DB's WordPress entries) name no CVE. Their title ("WordPress Plugin Total Upkeep 1.14.9 - …") is matched against the plugin's or theme's slug, readme name and WordPress.org name, word for word (so the old "wp-FileManager" plugin is not taken for "WP File Manager"); the name must be followed by a version or nothing, so a longer name ("Contact Form 7 to Database Extension") does not match a shorter one. When both versions are known, "< X" and "before X" need the detected version below X, and "<= X" or a plain "X" need it at X or below. Shown under the plugin or theme, apart from its vulnerabilities | A name match: it may not apply |
 | [PoC-in-GitHub](https://github.com/nomi-sec/PoC-in-GitHub) | Up to 5 GitHub repositories per CVE that claim a proof of concept | **Unreviewed**: some are fake, and some have carried malware |
 
 These are links only: cmsrecon never downloads, runs or adapts exploit code, and exploitation stays out of scope. Read any code before running it, and only against systems you are authorized to test. The CLI shows a count per source and the first three links (all of them with `-v`); possible vulnerabilities count how many have one.
@@ -200,6 +201,7 @@ Versions outside every source's range are not reported. Each match shows the aff
 | Format | Release |
 |---|---|
 | CLI (colored, `--no-color`, `-v` for evidence, `--possible` to list possible vulnerabilities) | v1 **built** |
+| Live progress on stderr when it is a terminal: a status line with the running steps, the elapsed time and the request count, and a line for each finished step with its result (`--no-progress` to turn it off). `cmsrecon update` shows each source the same way, with the megabytes downloaded and the speed | v1 **built** |
 | JSON, documented in [json-report.md](json-report.md) | v1 **built** |
 | SARIF, HTML | v1.1 |
 
