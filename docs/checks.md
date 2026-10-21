@@ -76,7 +76,7 @@ Every signal is reported with the version it saw and its confidence. Signals tha
 | `?ver=` on core scripts and styles under `wp-includes`, ignoring bundled libraries (jQuery, TinyMCE, `dist/vendor`, …); the more core assets agree, the higher the confidence | 30% for one asset, +10% per extra asset, at most 60% | passive | v1 **built** |
 | Version in `/readme.html` (only old releases print it) | 70% | aggressive | v1 **built** |
 | `$wp_version` in `/wp-includes/version.php` served as source | 100% | aggressive | v1 **built** |
-| Hashes of core static files, matched against our own hash database built from official WordPress releases | | aggressive | v1 |
+| MD5 hashes of core scripts and stylesheets (`wp-includes`, `wp-admin`, plus `readme.html` and `license.txt`), compared with WordPress.org's checksums of every release since 3.0, which `cmsrecon update` downloads (`corehashes`). Each file is picked to split the versions still possible best, preferring small files outside `wp-admin`; at most 6 files, and it gives up after 3 in a row that are missing, blocked or modified (a CDN that minifies). A file whose hash matches no remaining version changes nothing | 100% when one release is left. When 2 to 4 are left (security releases often change no static file), 90% for the one the other signals found if it is among them, otherwise 50% each. More than 4: nothing | aggressive | v1 **built** |
 
 ## Discovery
 
@@ -128,8 +128,8 @@ These are reported as [interesting findings](json-report.md#finding).
 | `cb` | `config-backup` | 38 names of `wp-config.php` copies left by editors, admins and deployment tools (`.bak`, `.old`, `.save`, `.swp`, `~`, `#wp-config.php#`, …), from our own list. A copy counts when it defines two or more of the WordPress constants (`DB_NAME`, `DB_PASSWORD`, `AUTH_KEY`, …), or one plus `$table_prefix`, and is not an HTML page (a catch-all page or a tutorial showing `define()` calls). The report names the constants, never their values | critical with `DB_PASSWORD`, high otherwise | v1 **built** |
 | `dbe` | `db-export` | About 70 paths: `<host>.sql`, `<domain>.sql`, `wordpress.sql`, `backup.sql`, `dump.sql`, `db.sql`, … with `.sql.gz`, plus `.zip` and `.tar.gz` for the host-based names, at the site root, in wp-content and in `backup/` folders, from our own list. Only the first 3 KB are requested (`Range`). SQL statements outside an HTML page, or an archive's magic bytes (contents not inspected) | high for SQL, medium for an archive | v1 **built** |
 | `bf` | `backup-folder` | 23 folders backup plugins write to (UpdraftPlus `updraft/`, All-in-One WP Migration `ai1wm-backups/`, Duplicator `backups-dup-lite/`, WPvivid, BackupBuddy, …), reported only with directory listing, which shows the backups can be downloaded. `backup-db/` has its own finding | high; low for an empty listing | v1 **built** |
-| `m` | | Media files through `?attachment_id=N` | | v1.1 |
-| `tt` | | Timthumb script locations and versions | | v1.1 |
+| `m[RANGE]` | | Uploaded files. First the REST API, `/wp/v2/media?per_page=100`, up to 1,000 files (ID, file URL, attachment page, MIME type, title). Only when it is closed, `/?attachment_id=N` for each ID of the range (default 1-100, as WPScan): a redirect to the file (attachment pages are off by default since WordPress 6.4) or to the attachment page, or the attachment page itself with its `attachmentid-N` body class, from which the file's link is read. The report lists documents and archives first. Not in the default `-e` | info | v1 **built** |
+| `tt` | | TimThumb, the image script themes and plugins bundled until 2014: 18 paths (`timthumb.php`, `thumb.php`, `lib/`, `inc/`, `includes/`, `scripts/`, `functions/`, …, cmsrecon's own list) in the folder of each theme and plugin found, plus the site root and wp-content. Only TimThumb's own error page counts ("A TimThumb error has occured", "TimThumb version : 2.8.13"), so a catch-all site reports nothing. Versions before 2.0 are vulnerable to CVE-2011-4106 (remote code execution, confirmed); 2.0 to 2.8.13 to CVE-2014-4663 (command execution through WebShot, likely: WebShot is off by default). Not in the default `-e` | critical, high | v1 **built** |
 
 ## Users (`-e u`)
 
@@ -179,6 +179,20 @@ Each match gets a verdict:
 
 With an unknown version, an advisory with no lower bound that reaches the latest release (or has no fix at all) affects every version, whatever is installed: it is **likely**, with a note. The other possible matches are summed up in one line per plugin or theme (how many, how many are critical or high, the version that fixes all of them) and counted; `--possible` lists them. A plugin of unknown version can otherwise list dozens of them, which buries the ones that matter.
 
+### Public exploits
+
+`cmsrecon update` (`exploits`) indexes the public exploits and proofs of concept of every CVE, and each vulnerability lists those of its CVEs, most trustworthy first:
+
+| Source | What | Trust |
+|---|---|---|
+| [Metasploit Framework](https://github.com/rapid7/metasploit-framework) `db/modules_metadata_base.json` | Exploit and auxiliary modules that name the CVE, with the module to `use` | Reviewed by the Metasploit team |
+| [Exploit-DB](https://gitlab.com/exploit-database/exploitdb) `files_exploits.csv` | Exploits that name the CVE, with Exploit-DB's "verified" mark | Verified ones were tested by Exploit-DB |
+| [Nuclei templates](https://github.com/projectdiscovery/nuclei-templates) `cves.json` | Detection templates, to confirm the vulnerability with `nuclei -id CVE-…` | Reviewed by ProjectDiscovery |
+| Advisory references | Exploit-DB and Packet Storm links among the vulnerability's references | As the source |
+| [PoC-in-GitHub](https://github.com/nomi-sec/PoC-in-GitHub) | Up to 5 GitHub repositories per CVE that claim a proof of concept | **Unreviewed**: some are fake, and some have carried malware |
+
+These are links only: cmsrecon never downloads, runs or adapts exploit code, and exploitation stays out of scope. Read any code before running it, and only against systems you are authorized to test. The CLI shows a count per source and the first three links (all of them with `-v`); possible vulnerabilities count how many have one.
+
 Versions outside every source's range are not reported. Each match shows the affected ranges, the first fixed version above the detected one (for core, the fix on the same branch), or that no fix exists, the CVSS score, CVEs, CWE and references. Core vulnerabilities are only matched against a known version: every WordPress vulnerability ever published "may" apply to an unknown one. A notice says when the data is missing, comes from the CVE List only, or is more than 7 days old.
 
 ## Output
@@ -191,6 +205,8 @@ Versions outside every source's range are not reported. Each match shows the aff
 
 Exit code 5 says the scan found confirmed or likely vulnerabilities, as WPScan's does; see the [README](../README.md#exit-codes).
 
+`--max-scan-duration` (a duration such as `10m`, or seconds as in WPScan) stops the scan when the time is up: the requests in flight are cancelled, what was found is still matched against the vulnerability data and reported, the status is `timed_out` and the exit code is 4.
+
 ## Compared with WPScan
 
 What WPScan does, from its public documentation and the names of its finders, and where cmsrecon stands. cmsrecon shares no code or data with WPScan.
@@ -199,7 +215,7 @@ What WPScan does, from its public documentation and the names of its finders, an
 |---|---|
 | Interesting findings (19 finders) | All built, same checks; the XML-RPC and full path disclosure checks go further (see [interesting findings](#interesting-findings)) |
 | Core version from feed generators, meta tags and readme | Built, plus core `?ver=` and `version.php` served as source |
-| Core version from unique file fingerprints | Planned: needs a hash database built from official releases |
+| Core version from unique file fingerprints | Built, from WordPress.org's own checksums of every release since 3.0; files are picked one at a time to split the remaining versions, so a few requests are enough |
 | Main theme from CSS links, body classes and WooFramework; version from `style.css` | Built |
 | Themes and plugins from homepage and 404 page URLs, comments, headers, body patterns, JavaScript variables, XPath, the REST API | Built, plus a small crawl, sitemaps, REST namespaces and directory listings |
 | `--plugins-detection` / `--themes-detection` (passive by default, mixed, aggressive) | Built, same meaning and default |
@@ -211,9 +227,11 @@ What WPScan does, from its public documentation and the names of its finders, an
 | Users from author IDs, posts, sitemaps (core and Yoast), oEmbed, feeds, the REST API | Built |
 | Users from login error messages | Never: one login attempt per username can lock accounts |
 | Password attacks through `wp-login.php` and XML-RPC | Never |
-| Timthumbs (`-e tt`), media attachments (`-e m`) | Planned for v1.1 |
+| Timthumbs (`-e tt`) | Built, in the folders of the themes and plugins found |
+| Media (`-e m`, attachment ID brute force) | Built; the REST API first, which lists a hundred files per request, IDs only when it is closed |
 | Vulnerability data from the WPScan API (token, daily quota) | Offline data from Wordfence, the CVE List and retire.js, with verdicts and possible vulnerabilities summed up |
 | Exit code 5 when vulnerable | Built (confirmed or likely vulnerabilities) |
-| `--max-scan-duration` | Not yet |
+| `--max-scan-duration` | Built; the partial report is still written (exit code 4) |
+| Exploit references (Exploit-DB, Metasploit) in its vulnerability data | Built from Exploit-DB, Metasploit, Nuclei templates and PoC-in-GitHub, by CVE, with how far each source can be trusted |
 | `--plugins-threshold` / `--themes-threshold` | Not needed: brute force is off by default and its size is chosen with `-e` |
 | JavaScript library vulnerabilities | Not a WPScan finder; built in cmsrecon |

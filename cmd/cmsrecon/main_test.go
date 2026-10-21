@@ -43,6 +43,10 @@ func TestRun(t *testing.T) {
 			"--wp-content-dir", "assets", "--wp-plugins-dir", "https://cdn.example.com/ext/", "--dry-run"}, exitOK,
 			[]string{"found on the site, then check of the named plugins (2)", "check of the named themes (1)", "wp-content:      assets", "Plugins folder:  https://cdn.example.com/ext/"}},
 		{"bad named plugin", []string{"-u", "example.com", "--plugins-list", "../etc", "--dry-run"}, exitUsage, nil},
+		{"timthumbs, media and a time limit", []string{"-u", "example.com", "-e", "tt,m1-50", "--max-scan-duration", "600", "--dry-run"}, exitOK,
+			[]string{"Timthumbs:       yes", "attachment IDs 1-50 when it is closed", "Max duration:    10m0s"}},
+		{"bad time limit", []string{"-u", "example.com", "--max-scan-duration", "soon", "--dry-run"}, exitUsage, nil},
+		{"negative time limit", []string{"-u", "example.com", "--max-scan-duration", "-5m", "--dry-run"}, exitUsage, nil},
 		{"scan help lists exit code 5", []string{"scan", "-h"}, exitOK, []string{"5    The scan completed and found confirmed or likely vulnerabilities"}},
 		{"update help", []string{"update", "-h"}, exitOK, []string{"cmsrecon update [options]", "retirejs"}},
 		{"update unknown source", []string{"update", "--sources", "nvd"}, exitUsage, nil},
@@ -165,6 +169,7 @@ func TestScanExit(t *testing.T) {
 		{"likely", scan.Result{Status: scan.StatusCompleted, VulnerabilityCounts: scan.VulnCounts{Likely: 1}}, exitVulnerable},
 		{"confirmed", scan.Result{Status: scan.StatusCompleted, VulnerabilityCounts: scan.VulnCounts{Confirmed: 2}}, exitVulnerable},
 		{"stopped", scan.Result{Status: scan.StatusStopped}, exitStopped},
+		{"timed out with vulnerabilities", scan.Result{Status: scan.StatusTimedOut, VulnerabilityCounts: scan.VulnCounts{Confirmed: 1}}, exitTimedOut},
 		{"interrupted with vulnerabilities", scan.Result{Status: scan.StatusInterrupted, VulnerabilityCounts: scan.VulnCounts{Confirmed: 1}}, exitInterrupted},
 	}
 	for _, tt := range tests {

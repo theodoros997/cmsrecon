@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/theodoros997/cmsrecon/internal/cli"
+	"github.com/theodoros997/cmsrecon/internal/corehash"
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
 	"github.com/theodoros997/cmsrecon/internal/wordlists"
 )
@@ -32,12 +33,28 @@ const cveRecord = `{"cveMetadata": {"cveId": "CVE-2020-11738", "state": "PUBLISH
 const retireRepo = `{"jquery": {"extractors": {"filename": ["jquery-(§§version§§)(\\.min)?\\.js"]},
  "vulnerabilities": [{"below": "3.5.0", "severity": "medium", "identifiers": {"summary": "XSS", "CVE": ["CVE-2020-11022"]}}]}}`
 
+const exploitDBCSV = "id,file,description,date_published,author,type,platform,port,date_added,date_updated,verified,codes,tags,aliases,screenshot_url,application_url,source_url\n" +
+	`49294,exploits/php/webapps/49294.py,"WordPress Plugin Contact Form 7 5.3.1 - Unrestricted File Upload",2020-12-21,x,webapps,php,,2020-12-21,2020-12-21,1,CVE-2020-35489,,,,,` + "\n" +
+	`50000,exploits/php/webapps/50000.txt,"Something without a CVE",2021-01-01,x,webapps,php,,2021-01-01,2021-01-01,0,OSVDB-1,,,,,` + "\n"
+
+const metasploitJSON = `{"exploit_multi/http/wp_cf7": {"name": "CF7 upload", "fullname": "exploit/multi/http/wp_cf7", "type": "exploit",
+ "path": "/modules/exploits/multi/http/wp_cf7.rb", "references": ["CVE-2020-35489", "URL-https://example.com"]},
+ "post_x": {"name": "Post module", "fullname": "post/x", "type": "post", "path": "/modules/post/x.rb", "references": ["CVE-2020-35489"]}}`
+
+const nucleiJSON = `{"ID":"CVE-2020-35489","Info":{"Name":"Contact Form 7 - Unrestricted File Upload","Severity":"critical"},"file_path":"http/cves/2020/CVE-2020-35489.yaml"}
+not json
+`
+
+const pocReadme = "# PoC in GitHub\n\n## 2020\n### CVE-2020-35489 (2020-12-17)\n\n<code>The contact-form-7 plugin...\n</code>\n\n" +
+	"- [someone/CVE-2020-35489](https://github.com/someone/CVE-2020-35489)\n- [bad](https://github.com/x/y/../../z)\n\n### CVE-2021-0001 (2021-01-01)\n- [a/b](https://github.com/a/b)\n"
+
 // upstream fakes every data source.
 type upstream struct {
-	srv        *httptest.Server
-	cveZip     []byte
-	cveFetches atomic.Int32
-	fail       map[string]bool // paths that answer 500
+	srv          *httptest.Server
+	cveZip       []byte
+	cveFetches   atomic.Int32
+	checksumAsks atomic.Int32
+	fail         map[string]bool // paths that answer 500
 }
 
 func newUpstream(t *testing.T) *upstream {
@@ -100,6 +117,30 @@ func newUpstream(t *testing.T) *upstream {
 	mux.HandleFunc("/retire.json", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, retireRepo)
 	})
+	mux.HandleFunc("/edb.csv", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, exploitDBCSV) })
+	mux.HandleFunc("/msf.json", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, metasploitJSON) })
+	mux.HandleFunc("/nuclei.json", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, nucleiJSON) })
+	mux.HandleFunc("/poc.md", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, pocReadme) })
+	mux.HandleFunc("/stable-check", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"2.9.2": "insecure", "3.0": "insecure", "6.4.2": "insecure", "6.6.2": "latest"}`)
+	})
+	mux.HandleFunc("/checksums", func(w http.ResponseWriter, r *http.Request) {
+		u.checksumAsks.Add(1)
+		if r.URL.Query().Get("locale") != "en_US" {
+			http.Error(w, "locale", 400)
+			return
+		}
+		switch r.URL.Query().Get("version") {
+		case "3.0":
+			fmt.Fprint(w, `{"checksums": false}`)
+		case "6.4.2":
+			fmt.Fprint(w, `{"checksums": {"wp-includes/js/wp-embed.min.js": "11111111111111111111111111111111", "wp-includes/version.php": "22222222222222222222222222222222"}}`)
+		case "6.6.2":
+			fmt.Fprint(w, `{"checksums": {"wp-includes/js/wp-embed.min.js": "33333333333333333333333333333333", "readme.html": "44444444444444444444444444444444"}}`)
+		default:
+			http.Error(w, "unknown version", 404)
+		}
+	})
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if u.fail[r.URL.Path] {
 			http.Error(w, "upstream down", 500)
@@ -117,6 +158,8 @@ func (u *upstream) endpoints() Endpoints {
 		CoreAPI: u.srv.URL + "/core-api", PluginsAPI: u.srv.URL + "/plugins-api", ThemesAPI: u.srv.URL + "/themes-api",
 		PluginsSVN: u.srv.URL + "/plugins-svn/", ThemesSVN: u.srv.URL + "/themes-svn/",
 		RetireJS: u.srv.URL + "/retire.json", PopularPlugins: 10, PopularThemes: 10,
+		ExploitDB: u.srv.URL + "/edb.csv", Metasploit: u.srv.URL + "/msf.json", Nuclei: u.srv.URL + "/nuclei.json", PoCInGitHub: u.srv.URL + "/poc.md",
+		CoreStable: u.srv.URL + "/stable-check", CoreChecksums: u.srv.URL + "/checksums",
 	}
 }
 
@@ -135,7 +178,7 @@ func TestRunDownloadsEverySource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v\n%+v", err, results)
 	}
-	if len(results) != 4 {
+	if len(results) != len(AllSources) {
 		t.Fatalf("results = %+v", results)
 	}
 	for _, r := range results {
@@ -180,10 +223,45 @@ func TestRunDownloadsEverySource(t *testing.T) {
 		t.Errorf("retire.js: %v", err)
 	}
 
+	x, err := vulndb.LoadExploits(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range x.Lookup([]string{"CVE-2020-35489"}) {
+		got = append(got, e.Source+" "+e.URL)
+	}
+	want := []string{
+		"metasploit https://github.com/rapid7/metasploit-framework/blob/master/modules/exploits/multi/http/wp_cf7.rb",
+		"exploitdb https://www.exploit-db.com/exploits/49294",
+		"nuclei https://github.com/projectdiscovery/nuclei-templates/blob/main/http/cves/2020/CVE-2020-35489.yaml",
+		"github https://github.com/someone/CVE-2020-35489",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("exploits = %q\nwant %q", got, want)
+	}
+	if es := x.Lookup([]string{"CVE-2020-35489"}); !es[1].Verified || es[0].Ref != "exploit/multi/http/wp_cf7" {
+		t.Errorf("exploit details = %+v", es)
+	}
+
+	hashes, err := corehash.Load(dir)
+	if err != nil || hashes == nil {
+		t.Fatalf("core hashes: %v", err)
+	}
+	if !slices.Equal(hashes.Versions, []string{"3.0", "6.4.2", "6.6.2"}) || len(hashes.Files) != 2 || len(hashes.Files["wp-includes/js/wp-embed.min.js"]) != 2 {
+		t.Errorf("core hashes = %v %v", hashes.Versions, hashes.Files)
+	}
+	asks := up.checksumAsks.Load()
+
 	// A second run reuses the CVE List release it already has.
 	results, err = Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceCVE}, Endpoints: up.endpoints()})
 	if err != nil || !strings.Contains(results[0].Summary, "already up to date") || up.cveFetches.Load() != 1 {
 		t.Errorf("second run: %v %+v, %d downloads", err, results, up.cveFetches.Load())
+	}
+	// ... and only asks for the checksums of new releases.
+	results, err = Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceCoreHash}, Endpoints: up.endpoints()})
+	if err != nil || !strings.Contains(results[0].Summary, "already up to date (3 releases)") || up.checksumAsks.Load() != asks {
+		t.Errorf("second core hashes run: %v %+v, %d asks", err, results, up.checksumAsks.Load()-asks)
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, ".*")); len(left) > 0 {
 		t.Errorf("temporary files left behind: %v", left)
@@ -212,5 +290,51 @@ func TestRunReportsEachSource(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, wordlists.AllThemesFile)); !os.IsNotExist(err) {
 		t.Errorf("themes list written despite the failure: %v", err)
+	}
+}
+
+func TestExploitsKeepFailedParts(t *testing.T) {
+	up := newUpstream(t)
+	dir := t.TempDir()
+	if _, err := Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceExploits}, Endpoints: up.endpoints()}); err != nil {
+		t.Fatal(err)
+	}
+	up.fail["/poc.md"] = true
+	results, err := Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceExploits}, Endpoints: up.endpoints()})
+	if err == nil || results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "PoC-in-GitHub") || results[0].Summary == "" {
+		t.Errorf("partial failure: %v %+v", err, results)
+	}
+	x, err := vulndb.LoadExploits(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if es := x.Lookup([]string{"CVE-2021-0001"}); len(es) != 1 || es[0].Source != vulndb.ExploitGitHub {
+		t.Errorf("the GitHub entries of the previous index are kept: %+v", es)
+	}
+
+	// Every part failing keeps the previous file untouched.
+	for _, p := range []string{"/edb.csv", "/msf.json", "/nuclei.json"} {
+		up.fail[p] = true
+	}
+	if results, err := Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceExploits}, Endpoints: up.endpoints()}); err == nil || results[0].Summary != "" {
+		t.Errorf("total failure: %v %+v", err, results)
+	}
+	if x, _ := vulndb.LoadExploits(dir); len(x.Lookup([]string{"CVE-2020-35489"})) == 0 {
+		t.Error("the previous index was lost")
+	}
+}
+
+func TestCoreHashesRetryFailedReleases(t *testing.T) {
+	up := newUpstream(t)
+	dir := t.TempDir()
+	up.fail["/checksums"] = true
+	results, err := Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceCoreHash}, Endpoints: up.endpoints()})
+	if err == nil || results[0].Err == nil {
+		t.Errorf("every release failing: %v %+v", err, results)
+	}
+	delete(up.fail, "/checksums")
+	results, err = Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceCoreHash}, Endpoints: up.endpoints()})
+	if err != nil || !strings.Contains(results[0].Summary, "3 releases") {
+		t.Errorf("retry: %v %+v", err, results)
 	}
 }

@@ -3,11 +3,18 @@ package scan
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/theodoros997/cmsrecon/internal/corehash"
+	"github.com/theodoros997/cmsrecon/internal/httpclient"
 )
 
 // MinVersionConfidence is the confidence below which a version is reported
@@ -20,6 +27,18 @@ const (
 	confFeedGenerator = 80
 	confReadme        = 70
 	confVersionPHP    = 100
+	confHashOne       = 100 // the file hashes match one release only
+	confHashConfirms  = 90  // they match a few releases, among them the one the other signals found
+	confHashFew       = 50  // they match a few releases and nothing else picks one: each gets this
+	maxHashCandidates = 4
+)
+
+// Limits of the file hash check: how many files it downloads at most, and
+// after how many misses in a row (blocked, missing or modified files) it
+// gives up.
+const (
+	maxHashFiles  = 6
+	maxHashMisses = 3
 )
 
 // versionRe matches WordPress version numbers: 6.4, 6.4.2, 6.5-RC1.
@@ -69,8 +88,79 @@ func (s *Scanner) detectVersion(ctx context.Context) *Version {
 		}
 		ev = append(ev, s.readmeVersion(ctx)...)
 		ev = append(ev, s.versionPHPSource(ctx)...)
+		if cands, u := s.hashVersion(ctx); len(cands) > 0 {
+			ev = append(ev, hashEvidence(cands, u, combineVersions(ev))...)
+		}
 	}
 	return combineVersions(ev)
+}
+
+// hashEvidence turns the releases whose files match into evidence. One
+// release is certain. A few (security releases often change no static
+// file) confirm the version the other signals found when it is one of
+// them; otherwise each becomes a candidate.
+func hashEvidence(cands []string, u string, others *Version) []Evidence {
+	switch {
+	case len(cands) == 1:
+		return []Evidence{{Method: "File hashes", Mode: modeAggressive, URL: u, Value: cands[0], Confidence: confHashOne}}
+	case len(cands) > maxHashCandidates:
+		return nil // too vague to count
+	}
+	method := "File hashes (one of " + strings.Join(cands, ", ") + ")"
+	if others.Number != "" && slices.Contains(cands, others.Number) {
+		return []Evidence{{Method: method, Mode: modeAggressive, URL: u, Value: others.Number, Confidence: confHashConfirms}}
+	}
+	var ev []Evidence
+	for _, v := range cands {
+		ev = append(ev, Evidence{Method: method, Mode: modeAggressive, URL: u, Value: v, Confidence: confHashFew})
+	}
+	return ev
+}
+
+// hashVersion downloads a few core scripts and stylesheets and compares
+// their MD5 hashes with those of every release since 3.0, from the
+// checksums "cmsrecon update" downloads from WordPress.org. Each file is
+// picked to split the remaining versions best, so a handful of requests
+// usually leaves one release, or the few security releases that changed no
+// static file.
+//
+// It returns the releases still possible and the last file that matched,
+// or nothing when no file matched.
+func (s *Scanner) hashVersion(ctx context.Context) ([]string, string) {
+	db := s.data.hashes
+	if db == nil || len(db.Versions) == 0 {
+		return nil, ""
+	}
+	p := corehash.NewPicker(db)
+	var matched []string
+	misses := 0
+	for range maxHashFiles {
+		if misses >= maxHashMisses {
+			break
+		}
+		path, ok := p.Next()
+		if !ok {
+			break
+		}
+		u := s.url(path)
+		res := s.do(ctx, httpclient.Request{URL: u, MaxBody: 4 << 20})
+		if res == nil || res.StatusCode != http.StatusOK || res.Truncated || (isHTML(res.Body) && !strings.HasSuffix(path, ".html")) {
+			p.Skip(path)
+			misses++
+			continue
+		}
+		sum := md5.Sum(res.Body)
+		if p.Observe(path, hex.EncodeToString(sum[:])) {
+			matched = append(matched, u)
+			misses = 0
+		} else {
+			misses++
+		}
+	}
+	if len(matched) == 0 {
+		return nil, ""
+	}
+	return p.Candidates(), matched[len(matched)-1]
 }
 
 // combineVersions groups evidence by version number and picks the number

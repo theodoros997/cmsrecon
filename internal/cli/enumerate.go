@@ -12,6 +12,13 @@ const DefaultEnumeration = "vp,vt,cb,dbe,bf,u"
 // DefaultUserIDs is the author ID range checked by a bare "u".
 var DefaultUserIDs = IDRange{From: 1, To: 10}
 
+// MaxIDRange caps how many IDs a range may hold: each is a request.
+const MaxIDRange = 100000
+
+// DefaultMediaIDs is the attachment ID range checked by a bare "m", as in
+// WPScan.
+var DefaultMediaIDs = IDRange{From: 1, To: 100}
+
 // ItemSet selects which plugin or theme slugs are brute-forced.
 type ItemSet int
 
@@ -51,13 +58,9 @@ type Enumeration struct {
 	ConfigBackups bool
 	DBExports     bool
 	BackupFolders bool
+	Timthumbs     bool
 	Users         *IDRange // nil when users are not enumerated
-}
-
-// planned lists WPScan choices that are on the roadmap but not built yet.
-var planned = map[string]string{
-	"m":  "media enumeration",
-	"tt": "timthumb enumeration",
+	Media         *IDRange // nil when media are not enumerated
 }
 
 // ParseEnumeration parses a comma-separated enumeration spec such as
@@ -90,18 +93,25 @@ func ParseEnumeration(spec string) (Enumeration, error) {
 			e.DBExports = true
 		case "bf":
 			e.BackupFolders = true
+		case "tt":
+			e.Timthumbs = true
 		default:
-			if what, ok := planned[tok]; ok {
-				return e, fmt.Errorf("enumerate: %q (%s) is not supported yet", tok, what)
+			switch {
+			case strings.HasPrefix(tok, "u"):
+				r, err := parseIDRange(strings.TrimPrefix(tok, "u"), DefaultUserIDs)
+				if err != nil {
+					return e, fmt.Errorf("enumerate: users: %w", err)
+				}
+				e.Users = &r
+			case strings.HasPrefix(tok, "m"):
+				r, err := parseIDRange(strings.TrimPrefix(tok, "m"), DefaultMediaIDs)
+				if err != nil {
+					return e, fmt.Errorf("enumerate: media: %w", err)
+				}
+				e.Media = &r
+			default:
+				return e, fmt.Errorf("enumerate: unknown choice %q (valid: vp, p, ap, vt, t, at, tt, cb, dbe, bf, u[RANGE], m[RANGE])", tok)
 			}
-			if !strings.HasPrefix(tok, "u") {
-				return e, fmt.Errorf("enumerate: unknown choice %q (valid: vp, p, ap, vt, t, at, cb, dbe, bf, u[RANGE])", tok)
-			}
-			r, err := parseIDRange(strings.TrimPrefix(tok, "u"))
-			if err != nil {
-				return e, fmt.Errorf("enumerate: users: %w", err)
-			}
-			e.Users = &r
 		}
 	}
 	return e, nil
@@ -118,10 +128,10 @@ func itemSetFor(tok string) ItemSet {
 	}
 }
 
-// parseIDRange parses "", "N" or "N-M". An empty string gives DefaultUserIDs.
-func parseIDRange(s string) (IDRange, error) {
+// parseIDRange parses "", "N" or "N-M". An empty string gives def.
+func parseIDRange(s string, def IDRange) (IDRange, error) {
 	if s == "" {
-		return DefaultUserIDs, nil
+		return def, nil
 	}
 	from, to, isRange := strings.Cut(s, "-")
 	lo, err := strconv.Atoi(from)
@@ -136,6 +146,9 @@ func parseIDRange(s string) (IDRange, error) {
 	}
 	if lo < 1 || hi < lo {
 		return IDRange{}, fmt.Errorf("invalid ID range %q: IDs start at 1 and the end must not be below the start", s)
+	}
+	if hi-lo >= MaxIDRange {
+		return IDRange{}, fmt.Errorf("invalid ID range %q: at most %d IDs, one request each", s, MaxIDRange)
 	}
 	return IDRange{From: lo, To: hi}, nil
 }

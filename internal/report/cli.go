@@ -3,10 +3,12 @@ package report
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/theodoros997/cmsrecon/internal/scan"
+	"github.com/theodoros997/cmsrecon/internal/vulndb"
 )
 
 // Options controls the CLI report.
@@ -143,14 +145,23 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 	if len(r.Users) > 0 {
 		p.users(r.Users)
 	}
-	if completed || r.Status == scan.StatusInterrupted {
+	if len(r.Timthumbs) > 0 {
+		p.timthumbs(r.Timthumbs)
+	}
+	if len(r.Media) > 0 {
+		p.media(r.Media)
+	}
+	if completed || r.Status == scan.StatusInterrupted || r.Status == scan.StatusTimedOut {
 		p.vulnSummary(r)
 	}
 	p.errors(r.Errors)
 
 	p.printf("\n")
-	if r.Status == scan.StatusInterrupted {
+	switch r.Status {
+	case scan.StatusInterrupted:
 		p.bad("Scan interrupted: the results above are partial")
+	case scan.StatusTimedOut:
+		p.bad("Scan stopped at --max-scan-duration: the results above are partial")
 	}
 	p.good("Finished in %s: %s, %s sent, %s received",
 		formatSeconds(r.Stats.ElapsedSeconds), plural(int(r.Stats.Requests), "request"),
@@ -385,6 +396,89 @@ func (p *printer) users(us []*scan.User) {
 	}
 }
 
+func (p *printer) timthumbs(ts []*scan.Timthumb) {
+	p.heading(fmt.Sprintf("Timthumbs (%d)", len(ts)))
+	for i, t := range ts {
+		if i > 0 {
+			p.printf("\n")
+		}
+		if hasStrongVulns(t.Vulnerabilities) {
+			p.bad("%s", p.style(bold, t.URL))
+		} else {
+			p.good("%s", p.style(bold, t.URL))
+		}
+		p.detail("Version: %s", versionText(t.Version))
+		p.vulns(t.Vulnerabilities, nil, nil, "")
+	}
+}
+
+var mediaKinds = []struct{ kind, one, many string }{
+	{"document", "document", "documents"},
+	{"archive or data", "archive or data file", "archives or data files"},
+	{"image", "image", "images"},
+	{"audio or video", "audio or video file", "audio or video files"},
+	{"unknown", "attachment page", "attachment pages"},
+}
+
+// maxMediaShown caps the media listed without -v.
+const maxMediaShown = 25
+
+// media lists uploaded files, documents and archives first: they are more
+// likely than images to hold something that was not meant to be public.
+func (p *printer) media(ms []*scan.Media) {
+	kinds := map[string]int{}
+	for _, m := range ms {
+		kinds[scan.MediaKind(m)]++
+	}
+	var parts []string
+	for _, k := range mediaKinds {
+		if n := kinds[k.kind]; n == 1 {
+			parts = append(parts, "1 "+k.one)
+		} else if n > 1 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, k.many))
+		}
+	}
+	p.heading(fmt.Sprintf("Media (%d): %s", len(ms), strings.Join(parts, ", ")))
+	sorted := slices.Clone(ms)
+	rank := func(m *scan.Media) int {
+		switch scan.MediaKind(m) {
+		case "archive or data":
+			return 0
+		case "document":
+			return 1
+		}
+		return 2
+	}
+	slices.SortStableFunc(sorted, func(a, b *scan.Media) int {
+		if ra, rb := rank(a), rank(b); ra != rb {
+			return ra - rb
+		}
+		return a.ID - b.ID
+	})
+	n := len(sorted)
+	if !p.o.Verbose && n > maxMediaShown {
+		n = maxMediaShown
+	}
+	for _, m := range sorted[:n] {
+		where := m.URL
+		if where == "" {
+			where = m.PageURL + " (attachment page)"
+		}
+		line := fmt.Sprintf("ID %d: %s", m.ID, where)
+		if m.MimeType != "" {
+			line += " (" + m.MimeType + ")"
+		}
+		if rank(m) < 2 {
+			p.info("%s", line)
+		} else {
+			p.good("%s", line)
+		}
+	}
+	if n < len(sorted) {
+		p.detail("%d more: -v or the JSON report lists them", len(sorted)-n)
+	}
+}
+
 // componentLine prints the first line of a theme or plugin: a warning
 // when a confirmed or likely vulnerability applies.
 func (p *printer) componentLine(slug string, confidence int, vulns []scan.Vulnerability) {
@@ -474,6 +568,9 @@ func possibleText(ps *scan.PossibleVulns, v *scan.Version) string {
 	if sev := severityCounts(ps); sev != "" {
 		s += " (" + sev + ")"
 	}
+	if ps.Exploits > 0 {
+		s += fmt.Sprintf(", %d with a public exploit", ps.Exploits)
+	}
 	them := "them"
 	if ps.Count == 1 {
 		them = "it"
@@ -526,6 +623,7 @@ func (p *printer) vuln(v scan.Vulnerability, indent string) {
 	if v.Note != "" {
 		p.detail("%s  %s", indent, v.Note)
 	}
+	p.exploits(v.Exploits, indent+"  ")
 	if p.o.Verbose {
 		p.detail("%s  Affected: %s (%s)", indent, strings.Join(v.Affected, ", "), strings.Join(v.Sources, ", "))
 		if v.CWE != "" {
@@ -537,6 +635,91 @@ func (p *printer) vuln(v scan.Vulnerability, indent string) {
 	} else if len(v.References) > 0 {
 		p.detail("%s  %s", indent, p.style(dim, v.References[0]))
 	}
+}
+
+// exploits prints a vulnerability's public exploits: how many each source
+// has, then the links, most trustworthy first (three without -v). They are
+// links only: cmsrecon never downloads or runs them.
+func (p *printer) exploits(es []scan.Exploit, indent string) {
+	if len(es) == 0 {
+		return
+	}
+	p.detail("%s%s %s", indent, p.style(bold, "Public exploits:"), exploitCounts(es))
+	n := len(es)
+	if !p.o.Verbose && n > 3 {
+		n = 3
+	}
+	for _, e := range es[:n] {
+		p.detail("%s  %s", indent, exploitLine(e))
+	}
+	if n < len(es) {
+		p.detail("%s  %d more: -v lists them", indent, len(es)-n)
+	}
+}
+
+var exploitNames = map[string][2]string{
+	vulndb.ExploitMetasploit:  {"Metasploit module", "Metasploit modules"},
+	vulndb.ExploitDB:          {"Exploit-DB entry", "Exploit-DB entries"},
+	vulndb.ExploitNuclei:      {"Nuclei template", "Nuclei templates"},
+	vulndb.ExploitPacketStorm: {"Packet Storm file", "Packet Storm files"},
+	vulndb.ExploitGitHub:      {"GitHub repository", "GitHub repositories"},
+}
+
+// exploitCounts sums exploits up by source: "1 Metasploit module, 2
+// Exploit-DB entries (1 verified), 5 GitHub repositories (unreviewed)".
+func exploitCounts(es []scan.Exploit) string {
+	var parts []string
+	for _, src := range vulndb.ExploitSources {
+		n, verified := 0, 0
+		for _, e := range es {
+			if e.Source == src {
+				n++
+				if e.Verified {
+					verified++
+				}
+			}
+		}
+		if n == 0 {
+			continue
+		}
+		name := exploitNames[src][1]
+		if n == 1 {
+			name = exploitNames[src][0]
+		}
+		part := fmt.Sprintf("%d %s", n, name)
+		switch {
+		case verified > 0:
+			part += fmt.Sprintf(" (%d verified)", verified)
+		case src == vulndb.ExploitGitHub:
+			part += " (unreviewed)"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// exploitLine describes one exploit: its source, what to run or its
+// title, and its link.
+func exploitLine(e scan.Exploit) string {
+	label := exploitNames[e.Source][0]
+	if label == "" {
+		label = e.Source
+	}
+	label = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(label, " module"), " entry"), " file")
+	if e.Verified {
+		label += ", verified"
+	}
+	what := e.Ref
+	if what == "" && e.Source != vulndb.ExploitGitHub {
+		what = e.Title
+	}
+	if len(what) > 90 {
+		what = strings.ToValidUTF8(what[:87], "") + "..."
+	}
+	if what == "" {
+		return label + ": " + e.URL
+	}
+	return label + ": " + what + " - " + e.URL
 }
 
 func countsText(c scan.VulnCounts) string {
@@ -556,7 +739,37 @@ func countsText(c scan.VulnCounts) string {
 }
 
 var sourceNames = map[string]string{
-	"wordfence": "Wordfence", "cve": "CVE List", "wporg": "WordPress.org", "retirejs": "retire.js",
+	"wordfence": "Wordfence", "cve": "CVE List", "wporg": "WordPress.org", "retirejs": "retire.js", "exploits": "public exploits",
+}
+
+// withExploits counts the confirmed and likely vulnerabilities that have a
+// public exploit.
+func withExploits(r *scan.Result) int {
+	n := 0
+	count := func(vs []scan.Vulnerability) {
+		for _, v := range vs {
+			if v.Verdict != scan.VerdictPossible && len(v.Exploits) > 0 {
+				n++
+			}
+		}
+	}
+	count(r.CoreVulnerabilities)
+	for t := r.MainTheme; t != nil; t = t.Parent {
+		count(t.Vulnerabilities)
+	}
+	for _, t := range r.Themes {
+		count(t.Vulnerabilities)
+	}
+	for _, pl := range r.Plugins {
+		count(pl.Vulnerabilities)
+	}
+	for _, l := range r.JSLibraries {
+		count(l.Vulnerabilities)
+	}
+	for _, t := range r.Timthumbs {
+		count(t.Vulnerabilities)
+	}
+	return n
 }
 
 // listedPossible reports whether the scan listed the possible
@@ -594,6 +807,13 @@ func (p *printer) vulnSummary(r *scan.Result) {
 		p.info("%s", text)
 	default:
 		p.good("None matched")
+	}
+	if n := withExploits(r); n > 0 {
+		what := fmt.Sprintf("%d of the confirmed and likely ones have", n)
+		if n == 1 {
+			what = "1 of the confirmed and likely ones has"
+		}
+		p.detail("%s", p.style(bold, what+" a public exploit or proof of concept (links above; review any code before running it)"))
 	}
 	if d := r.VulnerabilityData; d != nil && len(d.Sources) > 0 {
 		var parts []string

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -69,6 +70,7 @@ type ScanOptions struct {
 	Throttle        time.Duration
 	Timeout         time.Duration
 	Insecure        bool
+	MaxScanDuration time.Duration // stop the scan after this long; 0 for no limit
 
 	Format       Format
 	Output       string
@@ -86,7 +88,7 @@ type ScanOptions struct {
 func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	o := &ScanOptions{}
 	var target, enumerate, mode, pluginsMode, themesMode, format, scope, proxy, httpAuth, wpAuth string
-	var pluginsList, themesList string
+	var pluginsList, themesList, maxDuration string
 	var stealthy bool
 	headers := headerFlag{}
 
@@ -125,6 +127,7 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.DurationVar(&o.Throttle, "throttle", 0, "")
 	fs.DurationVar(&o.Timeout, "timeout", 60*time.Second, "")
 	fs.BoolVar(&o.Insecure, "insecure", false, "")
+	fs.StringVar(&maxDuration, "max-scan-duration", "", "")
 
 	fs.StringVar(&format, "f", string(FormatCLI), "")
 	fs.StringVar(&format, "format", string(FormatCLI), "")
@@ -180,6 +183,9 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	}
 	if o.CrawlPages < 0 || o.CrawlPages > MaxCrawlPages {
 		return nil, fmt.Errorf("--crawl must be between 0 and %d", MaxCrawlPages)
+	}
+	if o.MaxScanDuration, err = parseMaxDuration(maxDuration); err != nil {
+		return nil, err
 	}
 	if o.PluginsList, err = parseSlugList("plugins-list", pluginsList); err != nil {
 		return nil, err
@@ -300,6 +306,27 @@ func parseSlugList(flagName, v string) ([]string, error) {
 	return out, nil
 }
 
+// parseMaxDuration reads --max-scan-duration: a duration such as 10m or
+// 1h30m, or a number of seconds as in WPScan.
+func parseMaxDuration(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		n, nerr := strconv.Atoi(v)
+		if nerr != nil {
+			return 0, fmt.Errorf("invalid --max-scan-duration %q (use e.g. 600, 10m or 1h30m)", v)
+		}
+		d = time.Duration(n) * time.Second
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("--max-scan-duration must be positive")
+	}
+	return d, nil
+}
+
 // Crawl limits: how many extra pages discovery reads by default, at most.
 const (
 	DefaultCrawlPages = 10
@@ -396,7 +423,10 @@ Detection:
                                 cb            wp-config.php backups
                                 dbe           database exports
                                 bf            backup folders with directory listing
+                                tt            TimThumb scripts in the themes' and plugins' folders
                                 u[RANGE]      users, checking author IDs RANGE (default u1-10)
+                                m[RANGE]      media files: the REST API, or attachment IDs RANGE
+                                              when it is closed (default m1-100)
       --detection-mode MODE   passive, mixed or aggressive (default mixed)
       --plugins-detection MODE
                               passive (default): find the plugins the site uses from its
@@ -428,6 +458,8 @@ HTTP:
       --throttle DURATION     Wait between requests, e.g. 500ms (forces --threads 1)
       --timeout DURATION      Per-request timeout (default 60s)
       --insecure              Skip TLS certificate verification
+      --max-scan-duration D   Stop the scan after D (e.g. 10m, or 600 seconds) and report
+                              what was found so far
 
 Output:
   -f, --format FORMAT         cli or json (default cli)
@@ -449,6 +481,7 @@ Exit codes:
   3    A pre-flight check stopped the scan (unreachable, authentication required,
        403, out-of-scope redirect, not WordPress, WordPress.com, unfinished
        install); the report says why
+  4    The scan reached --max-scan-duration; the partial report is still written
   5    The scan completed and found confirmed or likely vulnerabilities
   130  Interrupted with Ctrl-C; the partial report is still written
 `

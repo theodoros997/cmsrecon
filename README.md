@@ -43,6 +43,8 @@ cmsrecon -u https://example.com --plugins-detection mixed -e vp,vt   # also brut
 cmsrecon -u https://example.com --plugins-list akismet,elementor      # also check these plugins, and no others
 cmsrecon -u https://example.com --stealthy                            # browser User-Agent, passive detection
 cmsrecon -u https://example.com --possible                            # list every possible vulnerability
+cmsrecon -u https://example.com -e vp,vt,u,tt,m                       # also TimThumb scripts and uploaded files
+cmsrecon -u https://example.com --max-scan-duration 15m               # stop after 15 minutes, report what was found
 cmsrecon -u https://example.com --dry-run
 cmsrecon scan -h
 cmsrecon update -h
@@ -71,7 +73,7 @@ To check only a few plugins or themes you suspect, name them: `--plugins-list ak
 
 For each plugin and theme found, the report says when WordPress.org last saw an update and warns when that was more than two years ago. Outside passive mode it also requests the item's folder, warning when the server lists its files, and its `error_log`, a PHP error log some hosts write next to the failing script that can disclose paths and data. That is two requests per item.
 
-`-e` takes the same choices as WPScan's `--enumerate`: `vp`/`p`/`ap` (vulnerable, popular or all plugins), `vt`/`t`/`at` (themes), `cb` (config backups), `dbe` (database exports), `bf` (backup folders) and `u[RANGE]` (users). The default is `vp,vt,cb,dbe,bf,u`. The plugin and theme lists only matter with brute force. They come from `cmsrecon update`: the vulnerable lists from the vulnerability data, the full lists from WordPress.org. Without them the popular lists are used and the report says so. For the quietest scan, `-e vp,vt,u` skips the backup-file guesses and `--detection-mode passive` reads only the homepage, the 404 page and its feeds.
+`-e` takes the same choices as WPScan's `--enumerate`: `vp`/`p`/`ap` (vulnerable, popular or all plugins), `vt`/`t`/`at` (themes), `tt` (TimThumb scripts in the folders of the themes and plugins found), `cb` (config backups), `dbe` (database exports), `bf` (backup folders), `u[RANGE]` (users) and `m[RANGE]` (uploaded files: the REST API lists them a hundred at a time, and only when it is closed are the attachment IDs of the range requested one by one; default `m1-100`). The default is `vp,vt,cb,dbe,bf,u`; `tt` and `m` are opt-in because they cost more requests. The plugin and theme lists only matter with brute force. They come from `cmsrecon update`: the vulnerable lists from the vulnerability data, the full lists from WordPress.org. Without them the popular lists are used and the report says so. For the quietest scan, `-e vp,vt,u` skips the backup-file guesses and `--detection-mode passive` reads only the homepage, the 404 page and its feeds.
 
 `--detection-mode` works as in WPScan: `passive` only reads pages the scan fetches anyway, `aggressive` only runs the checks that request specific paths, and `mixed` (the default) runs both. `-v` shows how each finding was detected and how confident cmsrecon is. The JSON format is documented in [docs/json-report.md](docs/json-report.md).
 
@@ -95,6 +97,22 @@ A plugin with no known version "may" be affected by every vulnerability ever pub
 
 `--possible` lists them in full, in the CLI and in the JSON report. The JSON report always has the summary in `possible_vulnerabilities`.
 
+### Public exploits and proofs of concept
+
+After `cmsrecon update`, each vulnerability lists the public exploits for its CVEs, most trustworthy first: Metasploit modules (with the module to `use`), Exploit-DB entries (marked when Exploit-DB verified them), Nuclei templates (to confirm the finding with `nuclei -id CVE-…`), Exploit-DB and Packet Storm links from the advisory, and up to five GitHub repositories from PoC-in-GitHub:
+
+```
+|   [CRITICAL] WordPress File Manager 6.0-6.8 - Unauthenticated Remote Code Execution
+|     confirmed - CVE-2020-25213 - CVSS 9.8 - fixed in 6.9
+|     Public exploits: 1 Metasploit module, 2 Exploit-DB entries (1 verified), 1 Nuclei template, 5 GitHub repositories (unreviewed)
+|       Metasploit: exploit/multi/http/wp_file_manager_rce - https://github.com/rapid7/metasploit-framework/blob/master/modules/exploits/multi/http/wp_file_manager_rce.rb
+|       Exploit-DB, verified: WP-file-manager v6.9 - Unauthenticated Arbitrary File Upload leading to RCE - https://www.exploit-db.com/exploits/51224
+|       Exploit-DB: WordPress Plugin Wp-FileManager 6.8 - RCE - https://www.exploit-db.com/exploits/49178
+|       6 more: -v lists them
+```
+
+These are links only: cmsrecon never downloads or runs exploit code. GitHub repositories are unreviewed, and some fake proofs of concept have carried malware, so read any code before running it, and only against systems you are authorized to test.
+
 ### Exit codes
 
 `cmsrecon scan`:
@@ -105,6 +123,7 @@ A plugin with no known version "may" be affected by every vulnerability ever pub
 | 1 | cmsrecon failed, e.g. the report file could not be written |
 | 2 | Invalid command line |
 | 3 | A pre-flight check stopped the scan: unreachable, authentication required, 403, a redirect to an out-of-scope host, not WordPress, hosted on WordPress.com, or an unfinished install. The report says why |
+| 4 | The scan reached `--max-scan-duration`; the partial report is still written |
 | 5 | The scan completed and found confirmed or likely vulnerabilities (possible ones do not count), as WPScan's exit code 5 |
 | 130 | Interrupted with Ctrl-C; the partial report is still written |
 
@@ -114,13 +133,15 @@ A plugin with no known version "may" be affected by every vulnerability ever pub
 
 - **Pre-flight:** reachability, redirects, WordPress detection, unfinished installs
 - **Interesting findings:** exposed logs, dumps, backup folders, readme, directory listings, XML-RPC, open registration, multisite and more
-- **WordPress core version** from feeds, meta tags, assets and file hashes
+- **WordPress core version** from feeds, meta tags, assets, `readme.html` and the hashes of its static files (compared with WordPress.org's checksums of every release since 3.0; a handful of requests)
 - **Themes and plugins:** discovery from a small crawl, sitemaps, REST API namespaces, 160 passive signatures (130 plugins) and directory listings, with optional brute force; versions from readmes, changelogs, file banners, `style.css` and `?ver=`, whether each is outdated or abandoned, and whether its folder lists files or exposes an error log
 - **JavaScript libraries:** jQuery, Bootstrap, Lodash, Moment and 60 more, from script URLs and version banners
 - **Users:** REST API, oEmbed, feeds, sitemaps and author IDs
+- **TimThumb** (`-e tt`): the vulnerable image script old themes and plugins bundled, with its version
+- **Media** (`-e m`): uploaded files from the REST API or attachment IDs, documents and archives listed first
 - **Exposed backups:** `wp-config.php` copies, database exports and backup plugin folders
 - **Authenticated inventory:** the exact plugin and theme list via an Application Password (`--wp-auth`)
-- **Vulnerabilities** for core, themes, plugins and JavaScript libraries, each with a verdict: **confirmed** (the detected version is affected), **likely** (affected, but the version is less certain or the sources disagree) or **possible** (the version is unknown; summed up per plugin, listed with `--possible`)
+- **Vulnerabilities** for core, themes, plugins, JavaScript libraries and TimThumb, with links to public exploits and proofs of concept, each with a verdict: **confirmed** (the detected version is affected), **likely** (affected, but the version is less certain or the sources disagree) or **possible** (the version is unknown; summed up per plugin, listed with `--possible`)
 
 [docs/checks.md](docs/checks.md) lists every check, the request it makes, the WPScan finder it corresponds to, and its planned release. Its last section compares cmsrecon with WPScan feature by feature.
 
@@ -132,6 +153,8 @@ A plugin with no known version "may" be affected by every vulnerability ever pub
 | [CVE List V5](https://github.com/CVEProject/cvelistV5) | Nothing | Cross-checking version ranges; the only source without a Wordfence key |
 | [WordPress.org API](https://codex.wordpress.org/WordPress.org_API) | Nothing | Latest versions, popular slugs, every slug for `-e ap`/`at` |
 | [retire.js](https://github.com/RetireJS/retire.js) database | Nothing | Vulnerable JavaScript libraries |
+| [Exploit-DB](https://gitlab.com/exploit-database/exploitdb), [Metasploit](https://github.com/rapid7/metasploit-framework), [Nuclei templates](https://github.com/projectdiscovery/nuclei-templates), [PoC-in-GitHub](https://github.com/nomi-sec/PoC-in-GitHub) | Nothing | Public exploits and proofs of concept by CVE (`exploits`, about 30 MB) |
+| [WordPress.org checksums](https://codex.wordpress.org/WordPress.org_API#Checksum) | Nothing | Core version from file hashes (`corehashes`). The first update asks for every release since 3.0, several hundred small requests; later ones only for new releases |
 
 Without a Wordfence key, the vulnerabilities come from the CVE List alone. Its records name the affected plugin less reliably (cmsrecon reads the slug from package names, wordpress.org, Trac, Patchstack, WPScan and Wordfence links, and as a last resort from the product name), so expect fewer matches.
 
@@ -146,7 +169,7 @@ Data from each source remains subject to that provider's terms.
 - [x] Pre-flight checks
 - [x] Interesting findings
 - [x] WordPress core version from feeds, meta tags, asset versions and readme
-- [ ] WordPress core version from file hashes (hash database built from official releases)
+- [x] WordPress core version from file hashes (WordPress.org's checksums of every release)
 - [x] Main theme and its version
 - [x] Theme and plugin discovery with version evidence
 - [x] User enumeration
@@ -154,9 +177,11 @@ Data from each source remains subject to that provider's terms.
 - [x] REST API inventory (`--wp-auth`)
 - [x] Vulnerability database (`cmsrecon update`) and matching
 - [x] JavaScript library detection (moved up from v1.1)
+- [x] TimThumb and media enumeration, `--max-scan-duration` (moved up from v1.1)
+- [x] Links to public exploits and proofs of concept
 - [x] CLI and JSON reports
 
-**v1.1:** plugin and theme hash fingerprinting, closed-plugin detection, SARIF and HTML reports, media and timthumb enumeration.
+**v1.1:** plugin and theme hash fingerprinting, closed-plugin detection, SARIF and HTML reports.
 
 ## Not affiliated with WPScan
 

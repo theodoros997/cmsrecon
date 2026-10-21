@@ -5,6 +5,7 @@ package scan
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/url"
 	"slices"
@@ -81,11 +82,20 @@ func New(opts *cli.ScanOptions, client *httpclient.Client) *Scanner {
 	}
 }
 
+// errMaxDuration is the cause of a scan stopped by --max-scan-duration.
+var errMaxDuration = errors.New("the scan reached --max-scan-duration")
+
 // Run scans the target and always returns a result. Notices are copied into
 // the result as they are. When ctx is cancelled, Run returns what it found so
-// far with StatusInterrupted.
+// far with StatusInterrupted, or StatusTimedOut when --max-scan-duration
+// ran out.
 func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 	start := time.Now()
+	if d := s.opts.MaxScanDuration; d > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, d, errMaxDuration)
+		defer cancel()
+	}
 	s.res = &Result{
 		SchemaVersion: SchemaVersion,
 		Tool:          Tool{Name: "cmsrecon", Version: buildinfo.Version, UserAgent: s.client.UserAgent()},
@@ -108,6 +118,10 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 	}
 	if ctx.Err() != nil {
 		s.res.Status = StatusInterrupted
+		if errors.Is(context.Cause(ctx), errMaxDuration) {
+			s.res.Status = StatusTimedOut
+			s.res.Notices = append(s.res.Notices, fmt.Sprintf("The scan stopped after --max-scan-duration %s: the checks still running were cut short, so the results are partial.", s.opts.MaxScanDuration))
+		}
 		if s.res.Stop != nil && s.res.Stop.Code == StopConnectionFailed {
 			s.res.Stop = nil // the request failed because of the interruption
 		}
@@ -174,8 +188,16 @@ func (s *Scanner) runChecks(ctx context.Context) {
 		s.res.JSLibraries = libs
 		s.mu.Unlock()
 	})
+	wg.Go(func() {
+		media := s.enumerateMedia(ctx)
+		s.mu.Lock()
+		s.res.Media = media
+		s.mu.Unlock()
+	})
 	wg.Wait()
+	// These look into the folders of the themes and plugins found.
 	s.checkItems(ctx)
+	s.res.Timthumbs = s.enumerateTimthumbs(ctx)
 	s.matchVulnerabilities()
 }
 

@@ -15,7 +15,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `target` | [Target](#target) | What was scanned |
 | `detection_mode` | string | `passive`, `mixed` or `aggressive` |
 | `started_at`, `finished_at` | string | RFC 3339 UTC timestamps, second precision |
-| `status` | string | `completed`, `stopped` (a pre-flight check stopped the scan, see `stop`) or `interrupted` (Ctrl-C; results are partial) |
+| `status` | string | `completed`, `stopped` (a pre-flight check stopped the scan, see `stop`), `interrupted` (Ctrl-C; results are partial) or `timed_out` (`--max-scan-duration` ran out; results are partial) |
 | `stop` | [Stop](#stop) or null | Why the scan stopped early |
 | `web_server` | object or null | `header`: the homepage's `Server` header (empty when absent); `family`: `apache`, `nginx`, `iis` or `unknown` |
 | `wordpress` | object or null | `detected` (boolean; `false` only when `--force` scanned anyway), `content_url` (the wp-content directory, omitted when it was not seen), `evidence` ([Evidence](#evidence) list) |
@@ -27,7 +27,9 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `plugins` | [Plugin](#plugin) list | Sorted by slug |
 | `js_libraries` | [JSLibrary](#jslibrary) list | Sorted by name |
 | `users` | [User](#user) list | Sorted by ID, then name; empty unless users were enumerated (`-e u`) |
-| `vulnerability_data` | object or null | The data the scan matched against: `directory` (the `--data-dir`) and `sources`, a list of `name` (`wordfence`, `cve`, `wporg` or `retirejs`), `updated_at` (RFC 3339) and `entries` (vulnerabilities, slugs or libraries). `sources` is empty before `cmsrecon update` |
+| `timthumbs` | [Timthumb](#timthumb) list | Empty unless TimThumb was enumerated (`-e tt`) |
+| `media` | [Media](#media) list | Sorted by ID; empty unless media were enumerated (`-e m`) |
+| `vulnerability_data` | object or null | The data the scan matched against: `directory` (the `--data-dir`) and `sources`, a list of `name` (`wordfence`, `cve`, `wporg`, `retirejs` or `exploits`), `updated_at` (RFC 3339) and `entries` (vulnerabilities, slugs, libraries, or CVEs with a public exploit). `sources` is empty before `cmsrecon update` |
 | `vulnerability_counts` | object | `confirmed`, `likely` and `possible`: the vulnerabilities of every component by verdict. `possible` counts the summed-up ones too (see `possible_vulnerabilities`) |
 | `notices` | string list | Things the user should know, e.g. missing or stale vulnerability data, or a list that replaced another |
 | `errors` | list | Requests that failed (`url`, `error`). A failed request does not stop the scan; the check that needed it reports nothing |
@@ -168,6 +170,7 @@ The vulnerabilities that only may apply to a plugin or theme, because its versio
 | `count` | integer | How many |
 | `critical`, `high` | integer | How many of them are rated critical or high |
 | `fixed_in` | string | The version that fixes all of them; omitted when one has no known fix |
+| `with_exploits` | integer | How many of them have a public exploit |
 | `listed` | boolean | Whether they are also in `vulnerabilities` (`--possible`) |
 
 ## JSLibrary
@@ -207,6 +210,38 @@ The vulnerabilities that only may apply to a plugin or theme, because its versio
 | `sources` | string list | `wordfence`, `cve` or `retirejs`, primary first |
 | `note` | string | Why the verdict is not `confirmed`, e.g. the sources disagree on the affected versions, or the version is unknown but every version up to the latest is affected; omitted otherwise |
 | `references` | string list | Advisory and patch links |
+| `exploits` | [Exploit](#exploit) list | Public exploits and proofs of concept for its CVEs, most trustworthy first; omitted when there are none |
+
+## Exploit
+
+A link to public exploit code. cmsrecon never downloads or runs it.
+
+| Field | Type | Description |
+|---|---|---|
+| `source` | string | `metasploit`, `exploitdb`, `nuclei`, `packetstorm` or `github` (PoC-in-GitHub: unreviewed, some are fake or malicious) |
+| `url` | string | Where it is |
+| `title` | string | Its title; omitted when unknown |
+| `ref` | string | What to run: the Metasploit module (`exploit/multi/http/wp_file_manager_rce`) or the Nuclei template ID; omitted otherwise |
+| `verified` | boolean | Exploit-DB tested it; omitted when false |
+
+## Timthumb
+
+| Field | Type | Description |
+|---|---|---|
+| `url` | string | The script |
+| `version` | [Version](#version) | From its error page; `number` is empty when it does not print one |
+| `evidence` | [Evidence](#evidence) list | |
+| `vulnerabilities` | [Vulnerability](#vulnerability) list | CVE-2011-4106 (before 2.0) and CVE-2014-4663 (2.0 to 2.8.13, likely: it needs WebShot, off by default); `sources` is `["cmsrecon"]` |
+
+## Media
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | integer | The attachment ID |
+| `url` | string | The file; omitted when only its attachment page was seen |
+| `page_url` | string | Its attachment page; omitted when unknown |
+| `mime_type`, `title` | string | From the REST API; omitted otherwise |
+| `evidence` | [Evidence](#evidence) list | `REST API` or `Attachment ID` |
 
 ## Example
 
@@ -321,7 +356,11 @@ Abridged output of a mixed-mode scan:
           "fixed_in": "5.3.2",
           "published": "2020-12-17",
           "sources": ["wordfence", "cve"],
-          "references": ["https://www.wordfence.com/threat-intel/vulnerabilities/id/…"]
+          "references": ["https://www.wordfence.com/threat-intel/vulnerabilities/id/…"],
+          "exploits": [
+            { "source": "exploitdb", "url": "https://www.exploit-db.com/exploits/…", "title": "WordPress Plugin Contact Form 7 5.3.1 - Unrestricted File Upload", "verified": true },
+            { "source": "github", "url": "https://github.com/…/CVE-2020-35489", "title": "…/CVE-2020-35489" }
+          ]
         }
       ]
     }
@@ -337,11 +376,14 @@ Abridged output of a mixed-mode scan:
   "users": [
     { "id": 1, "username": "admin", "display_name": "Site Admin", "confidence": 100, "evidence": [] }
   ],
+  "timthumbs": [],
+  "media": [],
   "vulnerability_data": {
     "directory": "/home/user/.cache/cmsrecon",
     "sources": [
       { "name": "wordfence", "updated_at": "2026-10-20T08:00:00Z", "entries": 31245 },
-      { "name": "cve", "updated_at": "2026-10-20T08:02:00Z", "entries": 18432 }
+      { "name": "cve", "updated_at": "2026-10-20T08:02:00Z", "entries": 18432 },
+      { "name": "exploits", "updated_at": "2026-10-20T08:04:00Z", "entries": 38228 }
     ]
   },
   "vulnerability_counts": { "confirmed": 1, "likely": 0, "possible": 0 },

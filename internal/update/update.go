@@ -13,16 +13,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/theodoros997/cmsrecon/internal/buildinfo"
+	"github.com/theodoros997/cmsrecon/internal/corehash"
 	"github.com/theodoros997/cmsrecon/internal/fsutil"
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
 	"github.com/theodoros997/cmsrecon/internal/wordlists"
@@ -34,10 +38,12 @@ const (
 	SourceCVE       = "cve"
 	SourceWPOrg     = "wporg"
 	SourceRetire    = "retirejs"
+	SourceExploits  = "exploits"
+	SourceCoreHash  = "corehashes"
 )
 
 // AllSources is the default --sources list, in the order they run.
-var AllSources = []string{SourceWordfence, SourceCVE, SourceWPOrg, SourceRetire}
+var AllSources = []string{SourceWordfence, SourceCVE, SourceWPOrg, SourceRetire, SourceExploits, SourceCoreHash}
 
 // Label is the name of a source for people.
 func Label(source string) string {
@@ -50,6 +56,10 @@ func Label(source string) string {
 		return "WordPress.org"
 	case SourceRetire:
 		return "retire.js"
+	case SourceExploits:
+		return "Public exploits"
+	case SourceCoreHash:
+		return "WordPress core checksums"
 	}
 	return source
 }
@@ -65,7 +75,13 @@ type Endpoints struct {
 	PluginsSVN     string // directory listing of every plugin slug
 	ThemesSVN      string
 	RetireJS       string
-	PopularPlugins int // how many popular plugins to fetch
+	ExploitDB      string // Exploit-DB's files_exploits.csv
+	Metasploit     string // Metasploit's modules_metadata_base.json
+	Nuclei         string // nuclei-templates' cves.json
+	PoCInGitHub    string // PoC-in-GitHub's README.md
+	CoreStable     string // WordPress.org list of every release
+	CoreChecksums  string // WordPress.org checksums of one release
+	PopularPlugins int    // how many popular plugins to fetch
 	PopularThemes  int
 }
 
@@ -79,6 +95,12 @@ var DefaultEndpoints = Endpoints{
 	PluginsSVN:     "https://plugins.svn.wordpress.org/",
 	ThemesSVN:      "https://themes.svn.wordpress.org/",
 	RetireJS:       vulndb.RetireURL,
+	ExploitDB:      "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv",
+	Metasploit:     "https://raw.githubusercontent.com/rapid7/metasploit-framework/master/db/modules_metadata_base.json",
+	Nuclei:         "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/main/cves.json",
+	PoCInGitHub:    "https://raw.githubusercontent.com/nomi-sec/PoC-in-GitHub/master/README.md",
+	CoreStable:     "https://api.wordpress.org/core/stable-check/1.0/",
+	CoreChecksums:  "https://api.wordpress.org/core/checksums/1.0/",
 	PopularPlugins: 2000,
 	PopularThemes:  500,
 }
@@ -145,6 +167,10 @@ func Run(ctx context.Context, o Options) ([]Result, error) {
 			r = u.wporg(ctx)
 		case SourceRetire:
 			r = u.retire(ctx)
+		case SourceExploits:
+			r = u.exploits(ctx)
+		case SourceCoreHash:
+			r = u.coreHashes(ctx)
 		default:
 			r = Result{Err: fmt.Errorf("unknown source %q", src)}
 		}
@@ -565,6 +591,61 @@ func (u *updater) retire(ctx context.Context) Result {
 	return Result{Summary: fmt.Sprintf("%s JavaScript libraries recognized", count(len(repo.Libraries())))}
 }
 
+// exploits builds the index of public exploits by CVE. A part that fails
+// keeps its entries from the previous index; the others are refreshed.
+func (u *updater) exploits(ctx context.Context) Result {
+	start := time.Now()
+	x := vulndb.NewExploitIndex()
+	parts := []struct {
+		source, label, url string
+		parse              func(io.Reader, *vulndb.ExploitIndex) error
+	}{
+		{vulndb.ExploitDB, "Exploit-DB", u.o.Endpoints.ExploitDB, vulndb.ParseExploitDB},
+		{vulndb.ExploitMetasploit, "Metasploit", u.o.Endpoints.Metasploit, vulndb.ParseMetasploit},
+		{vulndb.ExploitNuclei, "Nuclei templates", u.o.Endpoints.Nuclei, vulndb.ParseNuclei},
+		{vulndb.ExploitGitHub, "PoC-in-GitHub", u.o.Endpoints.PoCInGitHub, vulndb.ParsePoCInGitHub},
+	}
+	failed := map[string]bool{}
+	var errs []string
+	for _, p := range parts {
+		if ctx.Err() != nil {
+			return Result{Err: ctx.Err()}
+		}
+		u.logf("Public exploits: downloading %s...", p.label)
+		data, err := u.getBytes(ctx, p.url, nil, 128<<20)
+		if err == nil {
+			err = p.parse(bytes.NewReader(data), x)
+		}
+		if err != nil {
+			failed[p.source] = true
+			errs = append(errs, fmt.Sprintf("%s: %v", p.label, err))
+		}
+	}
+	if len(failed) == len(parts) {
+		return Result{Err: errors.New(strings.Join(errs, "; "))}
+	}
+	if old, err := vulndb.ReadExploits(u.path(vulndb.ExploitsFile)); err == nil && len(failed) > 0 {
+		for cve, es := range old.ByCVE {
+			for _, e := range es {
+				if failed[e.Source] {
+					x.Add(cve, e)
+				}
+			}
+		}
+	}
+	x.UpdatedAt = time.Now().UTC()
+	if err := vulndb.WriteExploits(u.path(vulndb.ExploitsFile), x); err != nil {
+		return Result{Err: err}
+	}
+	r := Result{Summary: fmt.Sprintf("%s CVEs with a public exploit: %s Metasploit modules, %s Exploit-DB entries, %s Nuclei templates, %s GitHub repositories (%s)",
+		count(x.Entries()), count(x.Counts[vulndb.ExploitMetasploit]), count(x.Counts[vulndb.ExploitDB]),
+		count(x.Counts[vulndb.ExploitNuclei]), count(x.Counts[vulndb.ExploitGitHub]), since(start))}
+	if len(errs) > 0 {
+		r.Err = fmt.Errorf("%s (their previous data is kept)", strings.Join(errs, "; "))
+	}
+	return r
+}
+
 // count formats an integer with thousands separators.
 func count(n int) string {
 	s := fmt.Sprint(n)
@@ -587,4 +668,100 @@ func megabytes(n int64) string {
 
 func since(t time.Time) string {
 	return time.Since(t).Round(time.Second).String()
+}
+
+// coreHashes downloads WordPress.org's checksums of every release since
+// corehash.MinVersion that the stored database does not have yet. A release
+// that fails is left out and asked for again by the next update.
+func (u *updater) coreHashes(ctx context.Context) Result {
+	start := time.Now()
+	data, err := u.getBytes(ctx, u.o.Endpoints.CoreStable, nil, 8<<20)
+	if err != nil {
+		return Result{Err: err}
+	}
+	releases, err := corehash.ParseReleases(data)
+	if err != nil {
+		return Result{Err: fmt.Errorf("release list: %w", err)}
+	}
+	old, err := corehash.Read(u.path(corehash.File))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		u.logf("WordPress core checksums: the stored data is unreadable, starting over (%v)", err)
+		old = nil
+	}
+	b := corehash.NewBuilder(old)
+	var todo []string
+	for _, v := range releases {
+		if !b.Has(v) {
+			todo = append(todo, v)
+		}
+	}
+	if len(todo) == 0 {
+		return Result{Summary: fmt.Sprintf("already up to date (%s releases)", count(b.Len()))}
+	}
+	u.logf("WordPress core checksums: downloading %s releases...", count(len(todo)))
+
+	type answer struct {
+		version string
+		sums    map[string]string
+		err     error
+	}
+	jobs := make(chan string)
+	answers := make(chan answer)
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Go(func() {
+			for v := range jobs {
+				q := url.Values{"version": {v}, "locale": {"en_US"}}
+				data, err := u.getBytes(ctx, u.o.Endpoints.CoreChecksums+"?"+q.Encode(), nil, 16<<20)
+				var sums map[string]string
+				if err == nil {
+					sums, err = corehash.ParseChecksums(data, v)
+				}
+				answers <- answer{v, sums, err}
+			}
+		})
+	}
+	go func() {
+		defer close(jobs)
+		for _, v := range todo {
+			select {
+			case jobs <- v:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() { wg.Wait(); close(answers) }()
+
+	var failed []string
+	done := 0
+	for a := range answers {
+		done++
+		if done%100 == 0 {
+			u.logf("WordPress core checksums: %d of %d releases", done, len(todo))
+		}
+		if a.err != nil {
+			failed = append(failed, a.version)
+			continue
+		}
+		// A release WordPress.org has no checksums for is remembered
+		// with no files, so it is not asked for again.
+		b.Add(a.version, a.sums)
+	}
+	if ctx.Err() != nil {
+		return Result{Err: ctx.Err()}
+	}
+	db := b.DB()
+	if len(db.Files) == 0 {
+		return Result{Err: errors.New("no checksums were downloaded")}
+	}
+	if err := corehash.Write(u.path(corehash.File), db); err != nil {
+		return Result{Err: err}
+	}
+	r := Result{Summary: fmt.Sprintf("%s releases, %s static files (%s)", count(len(db.Versions)), count(len(db.Files)), since(start))}
+	if len(failed) > 0 {
+		slices.SortFunc(failed, vulndb.Compare)
+		r.Err = fmt.Errorf("%d releases could not be downloaded (%s); the next update asks for them again", len(failed), strings.Join(failed[:min(len(failed), 5)], ", "))
+	}
+	return r
 }
