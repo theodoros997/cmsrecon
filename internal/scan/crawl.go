@@ -2,6 +2,7 @@ package scan
 
 import (
 	"context"
+	"fmt"
 	"html"
 	"net/http"
 	"net/url"
@@ -49,6 +50,18 @@ func (s *Scanner) crawl(ctx context.Context) *crawlResult {
 	if !s.aggressive() || s.opts.CrawlPages <= 0 {
 		return r
 	}
+	st := s.steps()
+	st.Start(stepPages)
+	st.Update(stepPages, "sitemaps")
+	defer func() {
+		read := 0
+		for _, p := range r.pages {
+			if p.label != "sitemap" {
+				read++
+			}
+		}
+		st.Done(stepPages, countSummary(read, "pages read for plugins and themes", "no extra page read"))
+	}()
 	var candidates []string
 	if idx := s.sitemapIndex(ctx); idx != nil {
 		r.pages = append(r.pages, labelledPage{"sitemap", modeAggressive, idx})
@@ -71,6 +84,7 @@ func (s *Scanner) crawl(ctx context.Context) *crawlResult {
 	login := s.url("wp-login.php")
 	urls = append(urls, login)
 
+	st.Update(stepPages, fmt.Sprintf("%d pages", len(urls)))
 	pages := make([]*page, len(urls))
 	s.parallel(ctx, len(urls), func(i int) {
 		res := s.get(ctx, urls[i])

@@ -75,6 +75,7 @@ type ScanOptions struct {
 	Format       Format
 	Output       string
 	NoColor      bool
+	NoProgress   bool // no live progress on stderr
 	Verbose      bool
 	ShowPossible bool // list the possible vulnerabilities instead of counting them
 	DryRun       bool
@@ -134,6 +135,7 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.StringVar(&o.Output, "o", "", "")
 	fs.StringVar(&o.Output, "output", "", "")
 	fs.BoolVar(&o.NoColor, "no-color", false, "")
+	fs.BoolVar(&o.NoProgress, "no-progress", false, "")
 	fs.BoolVar(&o.Verbose, "v", false, "")
 	fs.BoolVar(&o.Verbose, "verbose", false, "")
 	fs.BoolVar(&o.ShowPossible, "possible", false, "")
@@ -465,6 +467,8 @@ Output:
   -f, --format FORMAT         cli or json (default cli)
   -o, --output FILE           Write results to FILE instead of stdout
       --no-color              Disable colored output
+      --no-progress           Do not show what the scan is doing while it runs (shown on
+                              stderr when it is a terminal)
   -v, --verbose               Show how each finding was detected
       --possible              List the possible vulnerabilities (those of components whose
                               version is unknown) instead of only counting them

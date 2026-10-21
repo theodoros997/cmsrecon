@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
+	"github.com/theodoros997/cmsrecon/internal/wordlists"
 )
 
 // matchVulnerabilities attaches the known vulnerabilities to every detected
@@ -30,10 +31,12 @@ func (s *Scanner) matchVulnerabilities() {
 	for _, t := range themes {
 		t.Vulnerabilities, t.Possible = s.splitPossible(db.Match(vulndb.KindTheme, t.Slug, detected(t.Version)))
 		possible += t.Possible.count()
+		t.Exploits = s.namedExploits(wordlists.Themes, t.Slug, t.Name, t.Version, t.Vulnerabilities)
 	}
 	for _, p := range r.Plugins {
 		p.Vulnerabilities, p.Possible = s.splitPossible(db.Match(vulndb.KindPlugin, p.Slug, detected(p.Version)))
 		possible += p.Possible.count()
+		p.Exploits = s.namedExploits(wordlists.Plugins, p.Slug, p.Name, p.Version, p.Vulnerabilities)
 	}
 	for _, t := range r.Timthumbs {
 		t.Vulnerabilities = s.timthumbVulns(t.Version)
@@ -147,6 +150,36 @@ func detected(v *Version) vulndb.Detected {
 		}
 	}
 	return d
+}
+
+// namedExploits finds the Exploit-DB entries without a CVE that name a
+// plugin or theme: by its readme name, its WordPress.org name or its slug.
+// Entries already linked to one of its vulnerabilities are left out.
+func (s *Scanner) namedExploits(kind, slug, name string, v *Version, vulns []Vulnerability) []Exploit {
+	names := []string{slug}
+	for _, n := range []string{name, s.data.lists.Name(kind, slug)} {
+		if n != "" && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	version := ""
+	if v != nil {
+		version = v.Number
+	}
+	itemKind := "plugin"
+	if kind == wordlists.Themes {
+		itemKind = "theme"
+	}
+	var out []Exploit
+	for _, e := range s.data.exploits.ForItem(itemKind, names, version) {
+		linked := slices.ContainsFunc(vulns, func(vu Vulnerability) bool {
+			return slices.ContainsFunc(vu.Exploits, func(o Exploit) bool { return o.URL == e.URL })
+		})
+		if !linked {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // exploitsFor returns the public exploits of a vulnerability: those the

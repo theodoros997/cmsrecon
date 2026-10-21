@@ -17,6 +17,7 @@ import (
 	"github.com/theodoros997/cmsrecon/internal/buildinfo"
 	"github.com/theodoros997/cmsrecon/internal/cli"
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
+	"github.com/theodoros997/cmsrecon/internal/progress"
 	"github.com/theodoros997/cmsrecon/internal/wordlists"
 )
 
@@ -28,9 +29,10 @@ const (
 
 // Scanner scans one target. Create it with New and call Run once.
 type Scanner struct {
-	// Progress, when set, is called as brute-force runs advance, e.g.
-	// ("Plugins", 1200, 4000). It is called from several goroutines.
-	Progress func(label string, done, total int)
+	// Steps, when set, is told what the scan is doing: each step as it
+	// starts, what it is busy with, and its result. It is called from
+	// several goroutines.
+	Steps progress.Reporter
 
 	opts   *cli.ScanOptions
 	client *httpclient.Client
@@ -111,10 +113,19 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 		s.res.Notices = append(s.res.Notices, "Aggressive mode skips the passive checks: interesting headers, versions from the homepage and its feeds, and the main theme.")
 	}
 
+	st := s.steps()
+	st.Start(stepData)
 	s.loadData()
+	st.Done(stepData, s.dataSummary())
+	st.Start(stepPreflight)
 	if s.preflight(ctx) {
+		st.Done(stepPreflight, s.preflightSummary())
 		s.runChecks(ctx)
 		s.res.Status = StatusCompleted
+	} else if s.res.Stop != nil {
+		st.Fail(stepPreflight, s.res.Stop.Message)
+	} else {
+		st.Fail(stepPreflight, "interrupted")
 	}
 	if ctx.Err() != nil {
 		s.res.Status = StatusInterrupted
@@ -139,7 +150,10 @@ func (s *Scanner) runChecks(ctx context.Context) {
 		s.checkFantastico, s.checkSearchReplaceDB, s.checkConfigBackups, s.checkDBExports,
 		s.checkBackupFolders,
 	}
+	st := s.steps()
 	var wg sync.WaitGroup
+	var checked atomic.Int32
+	st.Start(stepFindings)
 	for _, check := range checks {
 		wg.Go(func() {
 			if f := check(ctx); len(f) > 0 {
@@ -147,13 +161,20 @@ func (s *Scanner) runChecks(ctx context.Context) {
 				s.res.InterestingFindings = append(s.res.InterestingFindings, f...)
 				s.mu.Unlock()
 			}
+			if n := int(checked.Add(1)); n < len(checks) {
+				st.Update(stepFindings, fmt.Sprintf("%d/%d checks", n, len(checks)))
+			} else {
+				st.Done(stepFindings, s.findingsSummary())
+			}
 		})
 	}
 	// The ?ver= signals of themes and plugins need the core version, and
 	// theme enumeration needs the main theme, so they come after.
 	wg.Go(func() {
+		st.Start(stepVersion)
 		v := s.detectVersion(ctx)
 		latest(v, s.data.lists.CoreLatest)
+		st.Done(stepVersion, versionSummary(v))
 		var main *Theme
 		var others []*Theme
 		var plugins []*Plugin
@@ -161,44 +182,81 @@ func (s *Scanner) runChecks(ctx context.Context) {
 		if inv != nil && len(inv.themes) > 0 {
 			main, others = s.themesFromInventory(inv)
 		} else {
+			// Its signals are passive: aggressive mode skips it.
+			if s.passive() {
+				st.Start(stepMainTheme)
+			}
 			main = s.detectMainTheme(ctx, v)
 			for t := main; t != nil; t = t.Parent {
 				latest(t.Version, s.data.lists.Latest(wordlists.Themes, t.Slug))
 			}
+			if s.passive() {
+				st.Done(stepMainTheme, mainThemeSummary(main))
+			}
 		}
 		var inner sync.WaitGroup
-		inner.Go(func() { plugins = s.detectPlugins(ctx, v) })
+		inner.Go(func() {
+			st.Start(stepPlugins)
+			plugins = s.detectPlugins(ctx, v)
+			st.Done(stepPlugins, countSummary(len(plugins), "found", "none found"))
+		})
 		if inv == nil || len(inv.themes) == 0 {
-			inner.Go(func() { others = s.enumerateThemes(ctx, v, main) })
+			inner.Go(func() {
+				st.Start(stepThemes)
+				others = s.enumerateThemes(ctx, v, main)
+				st.Done(stepThemes, countSummary(len(others), "other themes found", "no other theme found"))
+			})
 		}
 		inner.Wait()
 		s.mu.Lock()
 		s.res.Version, s.res.MainTheme, s.res.Themes, s.res.Plugins = v, main, others, plugins
 		s.mu.Unlock()
 	})
+	if s.opts.Enumerate.Users != nil {
+		wg.Go(func() {
+			st.Start(stepUsers)
+			users := s.enumerateUsers(ctx)
+			s.mu.Lock()
+			s.res.Users = users
+			s.mu.Unlock()
+			st.Done(stepUsers, countSummary(len(users), "found", "none found"))
+		})
+	}
 	wg.Go(func() {
-		users := s.enumerateUsers(ctx)
-		s.mu.Lock()
-		s.res.Users = users
-		s.mu.Unlock()
-	})
-	wg.Go(func() {
+		st.Start(stepJS)
 		libs := s.detectJSLibraries(ctx)
 		s.mu.Lock()
 		s.res.JSLibraries = libs
 		s.mu.Unlock()
+		st.Done(stepJS, countSummary(len(libs), "found", "none found"))
 	})
-	wg.Go(func() {
-		media := s.enumerateMedia(ctx)
-		s.mu.Lock()
-		s.res.Media = media
-		s.mu.Unlock()
-	})
+	if s.opts.Enumerate.Media != nil && s.aggressive() {
+		wg.Go(func() {
+			st.Start(stepMedia)
+			media := s.enumerateMedia(ctx)
+			s.mu.Lock()
+			s.res.Media = media
+			s.mu.Unlock()
+			st.Done(stepMedia, countSummary(len(media), "files found", "no file found"))
+		})
+	}
 	wg.Wait()
 	// These look into the folders of the themes and plugins found.
-	s.checkItems(ctx)
-	s.res.Timthumbs = s.enumerateTimthumbs(ctx)
+	if s.aggressive() {
+		st.Start(stepFolders)
+		n := s.checkItems(ctx)
+		st.Done(stepFolders, countSummary(n, "warnings", "nothing exposed"))
+	} else {
+		s.checkItems(ctx)
+	}
+	if s.opts.Enumerate.Timthumbs && s.aggressive() {
+		st.Start(stepTimthumbs)
+		s.res.Timthumbs = s.enumerateTimthumbs(ctx)
+		st.Done(stepTimthumbs, countSummary(len(s.res.Timthumbs), "found", "none found"))
+	}
+	st.Start(stepVulns)
 	s.matchVulnerabilities()
+	st.Done(stepVulns, s.vulnSummary())
 }
 
 func (s *Scanner) finish(start time.Time) {

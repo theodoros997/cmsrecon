@@ -144,6 +144,7 @@ The last three come from `-e cb`, `dbe` and `bf`. [checks.md](checks.md#interest
 | `warnings` | string list | What its folder exposes (a directory listing, a PHP `error_log`), and whether it looks abandoned (no update on WordPress.org for two years) |
 | `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first. Without `--possible`, only `confirmed` and `likely` ones |
 | `possible_vulnerabilities` | [PossibleVulns](#possiblevulns) | A summary of the `possible` ones; omitted when there are none |
+| `exploits` | [Exploit](#exploit) list | As for plugins: Exploit-DB entries that name the theme but no CVE |
 
 ## Plugin
 
@@ -160,6 +161,7 @@ The last three come from `-e cb`, `dbe` and `bf`. [checks.md](checks.md#interest
 | `warnings` | string list | As for themes |
 | `vulnerabilities` | [Vulnerability](#vulnerability) list | Strongest verdict first. Without `--possible`, only `confirmed` and `likely` ones |
 | `possible_vulnerabilities` | [PossibleVulns](#possiblevulns) | A summary of the `possible` ones; omitted when there are none |
+| `exploits` | [Exploit](#exploit) list | Exploit-DB entries that name the plugin and a version that can include the detected one, but no CVE: matched by name, so they may not apply. Omitted when there are none |
 
 ## PossibleVulns
 

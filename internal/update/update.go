@@ -28,6 +28,7 @@ import (
 	"github.com/theodoros997/cmsrecon/internal/buildinfo"
 	"github.com/theodoros997/cmsrecon/internal/corehash"
 	"github.com/theodoros997/cmsrecon/internal/fsutil"
+	"github.com/theodoros997/cmsrecon/internal/progress"
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
 	"github.com/theodoros997/cmsrecon/internal/wordlists"
 )
@@ -114,7 +115,8 @@ type Options struct {
 	Proxy        *url.URL      // nil: the environment's proxy settings
 	Timeout      time.Duration // time to wait for a server to start answering
 	Endpoints    Endpoints
-	Log          io.Writer // progress and results, for people
+	Log          io.Writer         // progress lines, for people, when Steps is nil
+	Steps        progress.Reporter // live progress: each source is a step
 }
 
 // Result says what happened to each source.
@@ -157,6 +159,9 @@ func Run(ctx context.Context, o Options) ([]Result, error) {
 		if ctx.Err() != nil {
 			break
 		}
+		if o.Steps != nil {
+			o.Steps.Start(Label(src))
+		}
 		var r Result
 		switch src {
 		case SourceWordfence:
@@ -175,9 +180,26 @@ func Run(ctx context.Context, o Options) ([]Result, error) {
 			r = Result{Err: fmt.Errorf("unknown source %q", src)}
 		}
 		r.Source = src
+		if r.Summary != "" && !r.Skipped {
+			if size := u.stored(src); size > 0 {
+				r.Summary += "; " + FormatSize(size) + " on disk"
+			}
+		}
 		results = append(results, r)
 		if r.Err != nil {
 			failed = append(failed, src)
+		}
+		if o.Steps != nil {
+			switch {
+			case r.Err != nil && r.Summary != "":
+				o.Steps.Fail(Label(src), fmt.Sprintf("%v; stored what it could: %s", r.Err, r.Summary))
+			case r.Err != nil:
+				o.Steps.Fail(Label(src), r.Err.Error())
+			case r.Skipped:
+				o.Steps.Done(Label(src), "skipped: "+r.Summary)
+			default:
+				o.Steps.Done(Label(src), r.Summary)
+			}
 		}
 	}
 	if ctx.Err() != nil {
@@ -206,8 +228,40 @@ func newClient(o Options) *http.Client {
 	}
 }
 
-func (u *updater) logf(format string, args ...any) {
-	fmt.Fprintf(u.o.Log, format+"\n", args...)
+// status says what a source is busy with: on the live status line, or as
+// a log line.
+func (u *updater) status(src, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if u.o.Steps != nil {
+		u.o.Steps.Update(Label(src), msg)
+		return
+	}
+	fmt.Fprintf(u.o.Log, "%s: %s\n", Label(src), msg)
+}
+
+// download returns a progress callback for a download of total bytes (0
+// when unknown): live, it shows the megabytes and the speed; in a log, a
+// line every 50 MB.
+func (u *updater) download(src, what string, total int64) func(done int64) {
+	start := time.Now()
+	var logged int64
+	return func(done int64) {
+		if u.o.Steps == nil {
+			if done-logged >= 50<<20 {
+				logged = done
+				u.status(src, "%s: %s of %s", what, megabytes(done), megabytes(total))
+			}
+			return
+		}
+		msg := what + ": " + megabytes(done)
+		if total > 0 {
+			msg += " of " + megabytes(total)
+		}
+		if secs := time.Since(start).Seconds(); secs > 0.5 {
+			msg += fmt.Sprintf(", %.1f MB/s", float64(done)/(1<<20)/secs)
+		}
+		u.status(src, "%s", msg)
+	}
 }
 
 // get sends a GET and returns the response when the status is 200.
@@ -298,7 +352,7 @@ func (u *updater) wordfence(ctx context.Context) Result {
 			"(https://www.wordfence.com/help/wordfence-intelligence/v3-accessing-and-consuming-the-vulnerability-data-feed/)"}
 	}
 	start := time.Now()
-	u.logf("Wordfence Intelligence: downloading the vulnerability feed...")
+	u.status(SourceWordfence, "connecting")
 	res, err := u.get(ctx, u.o.Endpoints.Wordfence, http.Header{"Authorization": {"Bearer " + u.o.WordfenceKey}, "Accept": {"application/json"}})
 	var se *StatusError
 	if errors.As(err, &se) && (se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden) {
@@ -308,7 +362,7 @@ func (u *updater) wordfence(ctx context.Context) Result {
 		return Result{Err: err}
 	}
 	defer res.Body.Close()
-	vulns, err := vulndb.ParseWordfence(res.Body)
+	vulns, err := vulndb.ParseWordfence(&progressReader{r: res.Body, report: u.download(SourceWordfence, "downloading and reading the feed", res.ContentLength)})
 	if err != nil {
 		return Result{Err: err}
 	}
@@ -365,7 +419,7 @@ func (u *updater) cve(ctx context.Context) Result {
 		return Result{Summary: fmt.Sprintf("already up to date (%s, %s vulnerabilities)", name, count(len(old.Vulnerabilities)))}
 	}
 
-	u.logf("CVE List: downloading %s (%s)...", name, megabytes(size))
+	u.status(SourceCVE, "downloading %s (%s)", name, megabytes(size))
 	tmp, err := os.CreateTemp(u.o.DataDir, ".cmsrecon-cvelist-*.zip")
 	if err != nil {
 		return Result{Err: err}
@@ -376,9 +430,7 @@ func (u *updater) cve(ctx context.Context) Result {
 		tmp.Close()
 		return Result{Err: err}
 	}
-	_, err = io.Copy(tmp, &progressReader{r: res.Body, total: size, report: func(done int64) {
-		u.logf("CVE List: %s of %s", megabytes(done), megabytes(size))
-	}})
+	_, err = io.Copy(tmp, &progressReader{r: res.Body, report: u.download(SourceCVE, "downloading the daily release", size)})
 	res.Body.Close()
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
@@ -387,10 +439,10 @@ func (u *updater) cve(ctx context.Context) Result {
 		return Result{Err: fmt.Errorf("downloading %s: %w", name, err)}
 	}
 
-	u.logf("CVE List: reading the records...")
+	u.status(SourceCVE, "reading the records")
 	vulns, err := vulndb.ParseCVEZip(tmp.Name(), func(n int) {
-		if n%100000 == 0 {
-			u.logf("CVE List: %s records read", count(n))
+		if n%100000 == 0 || (u.o.Steps != nil && n%5000 == 0) {
+			u.status(SourceCVE, "reading the records: %s read", count(n))
 		}
 	})
 	if err != nil {
@@ -406,19 +458,19 @@ func (u *updater) cve(ctx context.Context) Result {
 	return Result{Summary: fmt.Sprintf("%s WordPress core, plugin and theme vulnerabilities from %s (%s)", count(len(vulns)), name, since(start))}
 }
 
-// progressReader reports download progress every 50 MB.
+// progressReader reports how much was read, at most a few times a second.
 type progressReader struct {
-	r            io.Reader
-	total, done  int64
-	lastReported int64
-	report       func(done int64)
+	r      io.Reader
+	done   int64
+	last   time.Time
+	report func(done int64)
 }
 
 func (p *progressReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
 	p.done += int64(n)
-	if p.done-p.lastReported >= 50<<20 {
-		p.lastReported = p.done
+	if time.Since(p.last) >= 250*time.Millisecond {
+		p.last = time.Now()
 		p.report(p.done)
 	}
 	return n, err
@@ -428,7 +480,7 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // versions, and the lists of every plugin and theme slug.
 func (u *updater) wporg(ctx context.Context) Result {
 	start := time.Now()
-	u.logf("WordPress.org: downloading the popular plugins and themes...")
+	u.status(SourceWPOrg, "popular plugins and themes")
 	plugins, err := u.popular(ctx, u.o.Endpoints.PluginsAPI, "query_plugins", "plugins", 250, u.o.Endpoints.PopularPlugins)
 	if err != nil {
 		return Result{Err: fmt.Errorf("popular plugins: %w", err)}
@@ -446,7 +498,7 @@ func (u *updater) wporg(ctx context.Context) Result {
 		return Result{Err: err}
 	}
 
-	u.logf("WordPress.org: downloading every plugin and theme slug...")
+	u.status(SourceWPOrg, "every plugin and theme slug")
 	var totals []string
 	for _, l := range []struct {
 		url, file, what string
@@ -607,11 +659,11 @@ func (u *updater) exploits(ctx context.Context) Result {
 	}
 	failed := map[string]bool{}
 	var errs []string
-	for _, p := range parts {
+	for i, p := range parts {
 		if ctx.Err() != nil {
 			return Result{Err: ctx.Err()}
 		}
-		u.logf("Public exploits: downloading %s...", p.label)
+		u.status(SourceExploits, "%s, %d/%d", p.label, i+1, len(parts))
 		data, err := u.getBytes(ctx, p.url, nil, 128<<20)
 		if err == nil {
 			err = p.parse(bytes.NewReader(data), x)
@@ -632,18 +684,53 @@ func (u *updater) exploits(ctx context.Context) Result {
 				}
 			}
 		}
+		if failed[vulndb.ExploitDB] {
+			x.NoCVE = old.NoCVE
+		}
 	}
 	x.UpdatedAt = time.Now().UTC()
 	if err := vulndb.WriteExploits(u.path(vulndb.ExploitsFile), x); err != nil {
 		return Result{Err: err}
 	}
-	r := Result{Summary: fmt.Sprintf("%s CVEs with a public exploit: %s Metasploit modules, %s Exploit-DB entries, %s Nuclei templates, %s GitHub repositories (%s)",
+	r := Result{Summary: fmt.Sprintf("%s CVEs with a public exploit: %s Metasploit modules, %s Exploit-DB entries, %s Nuclei templates, %s GitHub repositories; and %s WordPress plugin and theme exploits without a CVE, matched by name (%s)",
 		count(x.Entries()), count(x.Counts[vulndb.ExploitMetasploit]), count(x.Counts[vulndb.ExploitDB]),
-		count(x.Counts[vulndb.ExploitNuclei]), count(x.Counts[vulndb.ExploitGitHub]), since(start))}
+		count(x.Counts[vulndb.ExploitNuclei]), count(x.Counts[vulndb.ExploitGitHub]), count(len(x.NoCVE)), since(start))}
 	if len(errs) > 0 {
 		r.Err = fmt.Errorf("%s (their previous data is kept)", strings.Join(errs, "; "))
 	}
 	return r
+}
+
+// sourceFiles are the files each source stores in the data directory.
+var sourceFiles = map[string][]string{
+	SourceWordfence: {vulndb.WordfenceFile},
+	SourceCVE:       {vulndb.CVEFile},
+	SourceWPOrg:     {wordlists.WPOrgFile, wordlists.AllPluginsFile, wordlists.AllThemesFile},
+	SourceRetire:    {vulndb.RetireFile},
+	SourceExploits:  {vulndb.ExploitsFile},
+	SourceCoreHash:  {corehash.File},
+}
+
+// stored is the size on disk of a source's files.
+func (u *updater) stored(src string) int64 {
+	var total int64
+	for _, name := range sourceFiles[src] {
+		if fi, err := os.Stat(u.path(name)); err == nil {
+			total += fi.Size()
+		}
+	}
+	return total
+}
+
+// FormatSize says 850 KB, 12.4 MB or 1.2 GB.
+func FormatSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	}
+	return fmt.Sprintf("%d KB", (n+1023)/1024)
 }
 
 // count formats an integer with thousands separators.
@@ -685,7 +772,7 @@ func (u *updater) coreHashes(ctx context.Context) Result {
 	}
 	old, err := corehash.Read(u.path(corehash.File))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		u.logf("WordPress core checksums: the stored data is unreadable, starting over (%v)", err)
+		u.status(SourceCoreHash, "the stored data is unreadable, starting over (%v)", err)
 		old = nil
 	}
 	b := corehash.NewBuilder(old)
@@ -698,7 +785,7 @@ func (u *updater) coreHashes(ctx context.Context) Result {
 	if len(todo) == 0 {
 		return Result{Summary: fmt.Sprintf("already up to date (%s releases)", count(b.Len()))}
 	}
-	u.logf("WordPress core checksums: downloading %s releases...", count(len(todo)))
+	u.status(SourceCoreHash, "%s releases to download", count(len(todo)))
 
 	type answer struct {
 		version string
@@ -737,8 +824,8 @@ func (u *updater) coreHashes(ctx context.Context) Result {
 	done := 0
 	for a := range answers {
 		done++
-		if done%100 == 0 {
-			u.logf("WordPress core checksums: %d of %d releases", done, len(todo))
+		if done%100 == 0 || u.o.Steps != nil {
+			u.status(SourceCoreHash, "releases %d/%d", done, len(todo))
 		}
 		if a.err != nil {
 			failed = append(failed, a.version)

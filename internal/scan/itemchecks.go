@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
@@ -31,8 +32,9 @@ type itemCheck struct {
 // WPScan does: a directory listing, and an error_log left by PHP (cPanel
 // writes one in the folder of the script that failed), which can disclose
 // paths and data. It also notes when WordPress.org last saw an update.
-// That is two requests per item, and only outside passive mode.
-func (s *Scanner) checkItems(ctx context.Context) {
+// That is two requests per item, and only outside passive mode. It
+// returns how many warnings it added.
+func (s *Scanner) checkItems(ctx context.Context) int {
 	r := s.res
 	var items []itemCheck
 	for _, p := range r.Plugins {
@@ -54,8 +56,9 @@ func (s *Scanner) checkItems(ctx context.Context) {
 		}
 	}
 	if !s.aggressive() {
-		return
+		return 0
 	}
+	var added atomic.Int32
 	s.parallel(ctx, len(items), func(i int) {
 		it := items[i]
 		if it.folder == "" {
@@ -76,7 +79,9 @@ func (s *Scanner) checkItems(ctx context.Context) {
 		s.mu.Lock()
 		*it.warnings = append(*it.warnings, warn...)
 		s.mu.Unlock()
+		added.Add(int32(len(warn)))
 	})
+	return int(added.Load())
 }
 
 var (

@@ -2,6 +2,7 @@ package scan
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -76,10 +77,10 @@ feed:
 	return out
 }
 
+// progress reports how far a brute-force run is, on the step of the same
+// name ("Plugins", "Themes").
 func (s *Scanner) progress(label string, done, total int) {
-	if s.Progress != nil {
-		s.Progress(label, done, total)
-	}
+	s.steps().Update(label, fmt.Sprintf("brute force %d/%d", done, total))
 }
 
 // probeOne decides whether u exists. It sends a HEAD request, which has no
