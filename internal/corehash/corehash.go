@@ -102,6 +102,13 @@ func (b *Builder) add(version, path, sum string) {
 // Has reports whether the builder holds a release.
 func (b *Builder) Has(version string) bool { return b.byVersion[version] != nil }
 
+// Empty reports whether the builder holds a release without any static
+// file: WordPress.org had no checksums for it when it was asked.
+func (b *Builder) Empty(version string) bool {
+	m, ok := b.byVersion[version]
+	return ok && len(m) == 0
+}
+
 // Add records the checksums of one release, keeping only static files.
 func (b *Builder) Add(version string, checksums map[string]string) {
 	m := map[string]string{}

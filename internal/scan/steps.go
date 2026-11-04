@@ -1,6 +1,8 @@
 package scan
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -24,6 +26,23 @@ const (
 	stepTimthumbs = "Timthumbs"
 	stepVulns     = "Vulnerabilities"
 )
+
+// endStep finishes a step with its result, or as cut short when the scan
+// stopped before the step could finish: "none found" would be wrong then.
+func (s *Scanner) endStep(ctx context.Context, step, result string) {
+	if ctx.Err() == nil {
+		s.steps().Done(step, result)
+		return
+	}
+	why := "interrupted"
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, errMaxDuration):
+		why = "--max-scan-duration reached"
+	case errors.Is(cause, errTargetFailing):
+		why = "the target kept failing or refusing requests"
+	}
+	s.steps().Fail(step, "cut short ("+why+")")
+}
 
 func (s *Scanner) steps() progress.Reporter {
 	if s.Steps == nil {

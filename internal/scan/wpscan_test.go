@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,8 @@ import (
 
 // Tests of the features that follow WPScan: named plugin and theme lists,
 // custom folders, per-item checks and version banners.
+
+var randomPathRe = regexp.MustCompile(`/[0-9a-f]{16}/$`)
 
 func TestNamedLists(t *testing.T) {
 	f := newFakeWP(t).addComponentSite()
@@ -33,7 +36,8 @@ func TestNamedLists(t *testing.T) {
 	}
 	var folders []string
 	for _, req := range f.requested() {
-		if strings.HasPrefix(req, "HEAD ") && strings.HasSuffix(req, "/") {
+		// The random path a baseline is taken from is not a probe.
+		if strings.HasPrefix(req, "HEAD ") && strings.HasSuffix(req, "/") && !randomPathRe.MatchString(req) {
 			folders = append(folders, strings.TrimPrefix(req, "HEAD "))
 		}
 	}

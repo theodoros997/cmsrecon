@@ -81,6 +81,23 @@ func (s *Scanner) stop(code, msg, hint string) {
 	s.res.Stop = &Stop{Code: code, Message: msg, Hint: hint}
 }
 
+// blockedHint says what to do about a homepage that is refused.
+func blockedHint(res *httpclient.Response) string {
+	switch {
+	case res.StatusCode == http.StatusTooManyRequests:
+		hint := "The site rate-limits this IP. Wait"
+		if ra := res.Header.Get("Retry-After"); ra != "" {
+			hint += " (it asks for " + ra + " seconds)"
+		}
+		return hint + ", then scan more slowly: --throttle 1s --threads 1."
+	case strings.HasPrefix(res.Blocked, "Cloudflare"):
+		return "A browser check blocks automated requests. Scan from an allowlisted IP, or solve the check in a browser and pass its cf_clearance cookie with --cookie and the same --user-agent."
+	case res.Blocked == "server overload":
+		return "The server is overloaded, down, or in maintenance. Try again later; --force scans anyway."
+	}
+	return "A firewall blocks this IP. Scan from an allowlisted IP, more slowly (--throttle 1s), or with --force to try anyway."
+}
+
 // fetchHomepage requests the homepage, following http<->https redirects on
 // the same host, and other redirects only with --follow-redirect.
 func (s *Scanner) fetchHomepage(ctx context.Context) (*httpclient.Response, bool) {
@@ -103,9 +120,19 @@ func (s *Scanner) fetchHomepage(ctx context.Context) (*httpclient.Response, bool
 		case http.StatusProxyAuthRequired:
 			s.stop(StopProxyAuthRequired, "The proxy requires authentication.", "Put the credentials in the proxy URL, e.g. --proxy http://user:pass@host:8080.")
 			return nil, false
+		}
+		if res.SiteBlocked && !s.opts.Force {
+			s.stop(StopBlocked, fmt.Sprintf("%s answered with a %s (HTTP %d) instead of the homepage.", u, res.Blocked, res.StatusCode), blockedHint(res))
+			return nil, false
+		}
+		switch res.StatusCode {
 		case http.StatusForbidden:
 			if !s.opts.Force {
-				s.stop(StopForbidden, fmt.Sprintf("%s answered 403 Forbidden.", u), "A WAF or an IP allowlist may be blocking the scan. Use --force to scan anyway.")
+				what := "403 Forbidden"
+				if res.Blocked != "" {
+					what += " (a " + res.Blocked + " page)"
+				}
+				s.stop(StopForbidden, fmt.Sprintf("%s answered %s.", u, what), "A WAF or an IP allowlist may be blocking the scan. Use --force to scan anyway.")
 				return nil, false
 			}
 		}

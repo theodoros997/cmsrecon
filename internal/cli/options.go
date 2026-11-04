@@ -487,5 +487,7 @@ Exit codes:
        install); the report says why
   4    The scan reached --max-scan-duration; the partial report is still written
   5    The scan completed and found confirmed or likely vulnerabilities
+  6    The target kept failing or refusing requests (rate limit, firewall,
+       outage), so the scan stopped; the partial report is still written
   130  Interrupted with Ctrl-C; the partial report is still written
 `

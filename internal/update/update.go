@@ -151,6 +151,7 @@ func Run(ctx context.Context, o Options) ([]Result, error) {
 	if err := os.MkdirAll(o.DataDir, 0o755); err != nil {
 		return nil, err
 	}
+	removeLeftovers(o.DataDir)
 	u := &updater{o: o, hc: newClient(o)}
 
 	var results []Result
@@ -264,8 +265,59 @@ func (u *updater) download(src, what string, total int64) func(done int64) {
 	}
 }
 
-// get sends a GET and returns the response when the status is 200.
+// removeLeftovers deletes the temporary files an update that was killed
+// left behind (the CVE List archive alone is about 500 MB). They start
+// with a dot; the data files do not.
+func removeLeftovers(dir string) {
+	for _, pattern := range []string{".cmsrecon-cvelist-*.zip", ".cmsrecon-cve-*.zip", ".*.tmp*"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, pattern))
+		for _, m := range matches {
+			if fi, err := os.Stat(m); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) > time.Hour {
+				os.Remove(m)
+			}
+		}
+	}
+}
+
+// stallTimeout cancels a download that receives nothing for this long:
+// the server stopped sending without closing the connection.
+const stallTimeout = 2 * time.Minute
+
+// stallReader cancels its request when no byte arrives for stallTimeout.
+type stallReader struct {
+	io.ReadCloser
+	timer  *time.Timer
+	cancel context.CancelFunc
+}
+
+func (s *stallReader) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	if n > 0 {
+		s.timer.Reset(stallTimeout)
+	}
+	return n, err
+}
+
+func (s *stallReader) Close() error {
+	s.timer.Stop()
+	s.cancel()
+	return s.ReadCloser.Close()
+}
+
+// get sends a GET and returns the response when the status is 200. The
+// body is cancelled if it stalls for stallTimeout.
 func (u *updater) get(ctx context.Context, rawURL string, header http.Header) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	res, err := u.getOnce(ctx, rawURL, header)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	res.Body = &stallReader{ReadCloser: res.Body, timer: time.AfterFunc(stallTimeout, cancel), cancel: cancel}
+	return res, nil
+}
+
+func (u *updater) getOnce(ctx context.Context, rawURL string, header http.Header) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -440,7 +492,7 @@ func (u *updater) cve(ctx context.Context) Result {
 	}
 
 	u.status(SourceCVE, "reading the records")
-	vulns, err := vulndb.ParseCVEZip(tmp.Name(), func(n int) {
+	vulns, err := vulndb.ParseCVEZipContext(ctx, tmp.Name(), func(n int) {
 		if n%100000 == 0 || (u.o.Steps != nil && n%5000 == 0) {
 			u.status(SourceCVE, "reading the records: %s read", count(n))
 		}
@@ -776,9 +828,11 @@ func (u *updater) coreHashes(ctx context.Context) Result {
 		old = nil
 	}
 	b := corehash.NewBuilder(old)
+	// New releases, and those WordPress.org had no checksums for last
+	// time (a release can be listed before its checksums are).
 	var todo []string
 	for _, v := range releases {
-		if !b.Has(v) {
+		if !b.Has(v) || b.Empty(v) {
 			todo = append(todo, v)
 		}
 	}

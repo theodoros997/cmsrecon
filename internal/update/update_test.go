@@ -262,9 +262,10 @@ func TestRunDownloadsEverySource(t *testing.T) {
 	if err != nil || !strings.Contains(results[0].Summary, "already up to date") || up.cveFetches.Load() != 1 {
 		t.Errorf("second run: %v %+v, %d downloads", err, results, up.cveFetches.Load())
 	}
-	// ... and only asks for the checksums of new releases.
+	// ... and only asks again for the releases it has no checksums for
+	// (3.0 answered "checksums": false), not for those it has.
 	results, err = Run(context.Background(), Options{DataDir: dir, Sources: []string{SourceCoreHash}, Endpoints: up.endpoints()})
-	if err != nil || !strings.Contains(results[0].Summary, "already up to date (3 releases)") || up.checksumAsks.Load() != asks {
+	if err != nil || !strings.Contains(results[0].Summary, "3 releases") || up.checksumAsks.Load() != asks+1 {
 		t.Errorf("second core hashes run: %v %+v, %d asks", err, results, up.checksumAsks.Load()-asks)
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, ".*")); len(left) > 0 {

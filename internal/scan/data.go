@@ -52,6 +52,9 @@ func (s *Scanner) loadData() {
 			if d.hashes, err = corehash.Load(dir); err != nil {
 				s.notice("The WordPress core checksums could not be read: %v", err)
 			}
+			if h := d.hashes; h != nil && len(h.Versions) > 0 && d.lists.CoreLatest != "" && vulndb.Compare(d.lists.CoreLatest, h.Versions[len(h.Versions)-1]) > 0 {
+				s.notice("The core checksums stop at WordPress %s, but %s is out: run \"cmsrecon update\" so file hashes can recognize it.", h.Versions[len(h.Versions)-1], d.lists.CoreLatest)
+			}
 		}
 	}
 	s.data = d

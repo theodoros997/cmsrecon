@@ -87,6 +87,13 @@ func MatchAdvisories(advs []*Advisory, d Detected) []Match {
 		switch {
 		case !in:
 			m.Verdict = VerdictPossible
+		case a.Guessed:
+			// The record names the product, not its slug: another
+			// plugin may have that slug.
+			m.Verdict = VerdictLikely
+			if m.Note == "" {
+				m.Note = "The record names the plugin by its product name, not its slug: check that it is this plugin"
+			}
 		case d.Confidence >= ConfirmedConfidence && !disagree && alternativesAgree(primary.Affected, d.Alternatives, in):
 			m.Verdict = VerdictConfirmed
 		default:
@@ -201,4 +208,47 @@ func SeverityRank(s string) int {
 // String describes a match in one line, for debugging and tests.
 func (m Match) String() string {
 	return fmt.Sprintf("%s %s (%s)", m.Verdict, m.Advisory.Title, strings.Join(m.Affected, ", "))
+}
+
+// CoreBackports corrects core matches for the fixes WordPress backports
+// to older branches. The CVE List often gives only the first fixed
+// release ("< 5.8.3"), so 5.7.5, which has the backported fix, would
+// look affected. For an advisory only the CVE List has: a fixed version
+// on the detected version's own branch, at or below it, means the fix is
+// there (the match is dropped); a first fix on a newer branch means it
+// may be there (the match becomes possible).
+func CoreBackports(ms []Match, version string) []Match {
+	v := Normalize(version)
+	out := ms[:0]
+	for _, m := range ms {
+		if m.Advisory.Kind != KindCore || len(m.Advisory.Sources) == 0 || m.Advisory.Sources[0].Source != SourceCVE {
+			out = append(out, m)
+			continue
+		}
+		fixedHere := false
+		for _, f := range m.Advisory.Fixed {
+			if branch(f) == branch(v) && Compare(v, f) >= 0 {
+				fixedHere = true
+			}
+		}
+		if fixedHere {
+			continue
+		}
+		if m.Verdict != VerdictPossible && m.FixedIn != "" && Compare(branch(m.FixedIn), branch(v)) > 0 {
+			m.Verdict = VerdictPossible
+			m.Note = "Only the CVE List has this one, and it names " + m.FixedIn + " as the fix; WordPress also backports security fixes to older branches, so " + version + " may already have it"
+		}
+		out = append(out, m)
+	}
+	SortMatches(out)
+	return out
+}
+
+// branch is a WordPress release branch: 6.4 for 6.4.2.
+func branch(v string) string {
+	parts := strings.SplitN(Normalize(v), ".", 3)
+	if len(parts) < 2 {
+		return parts[0]
+	}
+	return parts[0] + "." + parts[1]
 }

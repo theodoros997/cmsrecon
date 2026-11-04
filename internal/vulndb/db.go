@@ -204,16 +204,47 @@ func key(kind, slug string) string { return kind + "/" + strings.ToLower(slug) }
 
 // add merges v into the database. A vulnerability whose CVE is already
 // known from a higher-priority source becomes a cross-check of that
-// advisory, even under another slug: the higher-priority source's slug is
-// the one trusted.
+// advisory: of the advisory with the same slug, or, when the CVE names a
+// single plugin there, of that one even under another slug (the
+// higher-priority source's slug is trusted). When the CVE names several
+// plugins there (a free and a pro edition) and none has v's slug, v is
+// dropped rather than attached to the wrong one.
 func (db *DB) add(source string, v *Vuln) {
 	sr := SourceRanges{Source: source, ID: v.ID, Affected: v.Affected}
-	merged := false
+	// The CVE's advisories from higher-priority sources (files are added
+	// in priority order), and those this source has not cross-checked yet.
+	// A source's own advisories for several slugs stay separate.
+	var known, cands []*Advisory
 	for _, cve := range v.CVE {
 		for _, a := range db.byCVE[cve] {
-			if a.Kind != v.Kind || hasSource(a, source) {
+			if a.Kind != v.Kind || a.Sources[0].Source == source || slices.Contains(known, a) {
 				continue
 			}
+			known = append(known, a)
+			if !hasSource(a, source) {
+				cands = append(cands, a)
+			}
+		}
+	}
+	slug := strings.ToLower(v.Slug)
+	var targets []*Advisory
+	for _, a := range cands {
+		if a.Slug == slug {
+			targets = append(targets, a)
+		}
+	}
+	switch {
+	case len(targets) > 0:
+	case len(known) == 1 && len(cands) == 1:
+		targets = cands
+	case len(known) > 0:
+		// Several plugins have the CVE and none has this slug, or this
+		// source already cross-checked it: attaching it would be a guess.
+		return
+	}
+	merged := false
+	for _, a := range targets {
+		{
 			a.Sources = append(a.Sources, sr)
 			a.References = appendUnique(a.References, v.References...)
 			if a.CVSS == 0 && v.CVSS > 0 {

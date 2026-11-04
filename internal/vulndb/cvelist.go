@@ -3,6 +3,7 @@ package vulndb
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,24 +29,27 @@ type cveRecord struct {
 	} `json:"containers"`
 }
 
+// cveAffected is one product a CVE record says is affected.
+type cveAffected struct {
+	Vendor        string `json:"vendor"`
+	Product       string `json:"product"`
+	CollectionURL string `json:"collectionURL"`
+	PackageName   string `json:"packageName"`
+	Versions      []struct {
+		Version         string `json:"version"`
+		Status          string `json:"status"`
+		LessThan        string `json:"lessThan"`
+		LessThanOrEqual string `json:"lessThanOrEqual"`
+	} `json:"versions"`
+}
+
 type cveContainer struct {
 	Title        string `json:"title"`
 	Descriptions []struct {
 		Lang  string `json:"lang"`
 		Value string `json:"value"`
 	} `json:"descriptions"`
-	Affected []struct {
-		Vendor        string `json:"vendor"`
-		Product       string `json:"product"`
-		CollectionURL string `json:"collectionURL"`
-		PackageName   string `json:"packageName"`
-		Versions      []struct {
-			Version         string `json:"version"`
-			Status          string `json:"status"`
-			LessThan        string `json:"lessThan"`
-			LessThanOrEqual string `json:"lessThanOrEqual"`
-		} `json:"versions"`
-	} `json:"affected"`
+	Affected   []cveAffected `json:"affected"`
 	References []struct {
 		URL string `json:"url"`
 	} `json:"references"`
@@ -238,14 +242,19 @@ func (c *cveContainer) wordpressComponent(adp []cveContainer, desc string) (kind
 		return KindTheme, pkg[KindTheme], false
 	}
 
-	// 2. Reference URLs; the most referenced slug wins.
+	// 2. Reference URLs; the most referenced slug wins. A record about
+	// several products gets each product whose name is one of the
+	// referenced slugs.
 	var refs []string
 	for _, ct := range append([]cveContainer{*c}, adp...) {
 		for _, r := range ct.References {
-			refs = append(refs, r.URL)
+			refs = append(refs, patchstackThemeRef(r.URL))
 		}
 	}
 	if slug := mostReferenced(pluginRefRe, refs); slug != "" {
+		if many := c.productSlugs(pluginRefRe, refs); len(many) > 1 {
+			return KindPlugin, many, false
+		}
 		return KindPlugin, []string{slug}, false
 	}
 	if slug := mostReferenced(themeRefRe, refs); slug != "" {
@@ -291,6 +300,46 @@ func (c *cveContainer) wordpressComponent(adp []cveContainer, desc string) (kind
 	return kind, slugs, true
 }
 
+// patchstackLegacyRe is Patchstack's older vulnerability URL, which puts a
+// theme's slug where a plugin's goes; the next segment says which it is
+// ("wordpress-astra-theme-…").
+var patchstackLegacyRe = regexp.MustCompile(`(?i)^(https?://patchstack\.com/database/)vulnerability/([a-z0-9][a-z0-9_-]*)/([^/?#]*)`)
+
+// patchstackThemeRef rewrites a legacy Patchstack URL about a theme to the
+// theme URL form, so that the theme is not taken for a plugin.
+func patchstackThemeRef(u string) string {
+	m := patchstackLegacyRe.FindStringSubmatch(u)
+	if m == nil || !strings.Contains(strings.ToLower(m[3]), "-theme-") {
+		return u
+	}
+	return m[1] + "wordpress/theme/" + m[2] + "/"
+}
+
+// productSlugs returns, for a record about several products, the
+// referenced slugs that are one of the products' names, so that each
+// product's ranges go to its own slug.
+func (c *cveContainer) productSlugs(re *regexp.Regexp, refs []string) []string {
+	if len(c.Affected) < 2 {
+		return nil
+	}
+	referenced := map[string]bool{}
+	for _, r := range refs {
+		for _, m := range re.FindAllStringSubmatch(r, -1) {
+			referenced[strings.ToLower(m[1])] = true
+		}
+	}
+	var out []string
+	for _, a := range c.Affected {
+		for _, s := range []string{strings.ToLower(a.PackageName), slugify(a.Product)} {
+			if s != "" && referenced[s] {
+				out = appendUnique(out, s)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func mostReferenced(re *regexp.Regexp, refs []string) string {
 	counts := map[string]int{}
 	var order []string
@@ -325,9 +374,22 @@ func slugify(name string) string {
 
 // ranges returns the affected ranges and fixed versions for one slug.
 func (c *cveContainer) ranges(kind, slug, desc string) ([]Range, []string) {
-	// With several products (a free and a premium edition) and one slug,
-	// prefer the editions whose names fit the slug.
+	// With several products, keep the one whose name is the slug: a record
+	// about two plugins must not give one of them the other's ranges.
+	// Failing that, with a free and a premium edition, prefer the editions
+	// whose names fit the slug.
 	affected := c.Affected
+	if len(affected) > 1 && kind != KindCore {
+		var named []cveAffected
+		for _, a := range affected {
+			if strings.EqualFold(a.PackageName, slug) || slugify(a.Product) == slug {
+				named = append(named, a)
+			}
+		}
+		if len(named) > 0 {
+			affected = named
+		}
+	}
 	if len(affected) > 1 && kind != KindCore {
 		var fit []int
 		for i, a := range affected {
@@ -457,6 +519,11 @@ func descriptionRange(desc string) (Range, string, bool) {
 // opened too (the release asset is a zip that holds cves.zip). progress,
 // when not nil, is called with the number of records read so far.
 func ParseCVEZip(file string, progress func(records int)) ([]*Vuln, error) {
+	return ParseCVEZipContext(context.Background(), file, progress)
+}
+
+// ParseCVEZipContext is ParseCVEZip that stops when ctx is cancelled.
+func ParseCVEZipContext(ctx context.Context, file string, progress func(records int)) ([]*Vuln, error) {
 	zr, err := zip.OpenReader(file)
 	if err != nil {
 		return nil, err
@@ -465,6 +532,9 @@ func ParseCVEZip(file string, progress func(records int)) ([]*Vuln, error) {
 	var out []*Vuln
 	n := 0
 	for _, f := range zr.File {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		name := strings.ToLower(f.Name)
 		switch {
 		case strings.HasSuffix(name, ".zip"):
@@ -472,7 +542,7 @@ func ParseCVEZip(file string, progress func(records int)) ([]*Vuln, error) {
 			if err != nil {
 				return nil, err
 			}
-			vulns, err := ParseCVEZip(inner, func(k int) {
+			vulns, err := ParseCVEZipContext(ctx, inner, func(k int) {
 				if progress != nil {
 					progress(n + k)
 				}

@@ -128,7 +128,7 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 		p.findings(r.InterestingFindings)
 	}
 	if r.Version != nil {
-		p.version(r.Version, r.CoreVulnerabilities)
+		p.version(r.Version, r.CoreVulnerabilities, r.CorePossible)
 	}
 	if completed || r.MainTheme != nil {
 		p.theme(r)
@@ -151,10 +151,10 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 	if len(r.Media) > 0 {
 		p.media(r.Media)
 	}
-	if completed || r.Status == scan.StatusInterrupted || r.Status == scan.StatusTimedOut {
+	if completed || r.Status == scan.StatusInterrupted || r.Status == scan.StatusTimedOut || r.Status == scan.StatusBlocked {
 		p.vulnSummary(r)
 	}
-	p.errors(r.Errors)
+	p.errors(r.Errors, r.Stats.FailedRequests)
 
 	p.printf("\n")
 	switch r.Status {
@@ -162,6 +162,8 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 		p.bad("Scan interrupted: the results above are partial")
 	case scan.StatusTimedOut:
 		p.bad("Scan stopped at --max-scan-duration: the results above are partial")
+	case scan.StatusBlocked:
+		p.bad("Scan stopped: the target kept failing or refusing requests, so the results above are partial (see the notices)")
 	}
 	p.good("Finished in %s: %s, %s sent, %s received",
 		formatSeconds(r.Stats.ElapsedSeconds), plural(int(r.Stats.Requests), "request"),
@@ -238,7 +240,7 @@ func (p *printer) evidence(label, indent string, ev []scan.Evidence) {
 	}
 }
 
-func (p *printer) version(v *scan.Version, vulns []scan.Vulnerability) {
+func (p *printer) version(v *scan.Version, vulns []scan.Vulnerability, possible *scan.PossibleVulns) {
 	p.heading("WordPress version")
 	switch {
 	case v.Number != "" && hasStrongVulns(vulns):
@@ -254,7 +256,7 @@ func (p *printer) version(v *scan.Version, vulns []scan.Vulnerability) {
 	if l := latestText(v); l != "" {
 		p.detail("%s", l)
 	}
-	p.vulns(vulns, nil, nil, "")
+	p.vulns(vulns, possible, v, "")
 	if p.o.Verbose {
 		if len(v.Candidates) > 1 {
 			var others []string
@@ -803,6 +805,9 @@ func withExploits(r *scan.Result) int {
 // listedPossible reports whether the scan listed the possible
 // vulnerabilities (--possible).
 func listedPossible(r *scan.Result) bool {
+	if r.CorePossible != nil {
+		return r.CorePossible.Listed
+	}
 	for _, pl := range r.Plugins {
 		if pl.Possible != nil {
 			return pl.Possible.Listed
@@ -893,18 +898,22 @@ func (p *printer) themeDetails(t *scan.Theme, indent string) {
 	p.namedExploits(t.Exploits, "theme", t.Version, indent)
 }
 
-func (p *printer) errors(errs []scan.RequestError) {
-	if len(errs) == 0 {
+func (p *printer) errors(errs []scan.RequestError, failed int) {
+	n := max(len(errs), failed)
+	if n == 0 {
 		return
 	}
 	p.printf("\n")
 	if !p.o.Verbose {
-		p.bad("%s failed; the checks that needed them reported nothing (use -v to list them)", plural(len(errs), "request"))
+		p.bad("%s failed; the checks that needed them reported nothing (use -v to list them)", plural(n, "request"))
 		return
 	}
-	p.bad("%s failed; the checks that needed them reported nothing:", plural(len(errs), "request"))
+	p.bad("%s failed; the checks that needed them reported nothing:", plural(n, "request"))
 	for _, e := range errs {
 		p.detail("%s: %s", e.URL, e.Error)
+	}
+	if n > len(errs) {
+		p.detail("%d more not listed", n-len(errs))
 	}
 }
 

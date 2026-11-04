@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/theodoros997/cmsrecon/internal/httpclient"
 )
 
 // Confidence of user signals.
@@ -65,6 +67,37 @@ func (us *userSet) add(id int, username, display string, e Evidence) {
 	merge(u, &User{ID: id, Username: username, DisplayName: display, Evidence: []Evidence{e}})
 }
 
+// commentsFeed reports whether a feed URL is a comments feed: the site's
+// (/comments/feed/, ?feed=comments-rss2) or a post's (/2026/10/post/feed/).
+func commentsFeed(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if strings.HasPrefix(u.Query().Get("feed"), "comments") {
+		return true
+	}
+	p := strings.TrimSuffix(strings.ToLower(u.Path), "/")
+	if strings.Contains(p, "/comments/feed") {
+		return true
+	}
+	// A post's feed: /<post>/feed, but not the site's /feed, nor the
+	// category, tag and author feeds, which list posts.
+	before, ok := strings.CutSuffix(p, "/feed")
+	if !ok {
+		before, ok = strings.CutSuffix(strings.TrimSuffix(p, "/atom"), "/feed")
+	}
+	if !ok || before == "" {
+		return false
+	}
+	for _, listing := range []string{"/category/", "/tag/", "/author/", "/type/"} {
+		if strings.Contains(before+"/", listing) {
+			return false
+		}
+	}
+	return true
+}
+
 // merge copies what u lacks from o and adds o's evidence.
 func merge(u, o *User) {
 	if u.ID == 0 {
@@ -99,6 +132,22 @@ func (us *userSet) list() []*User {
 		}
 		out = append(out, u)
 	}
+	// A display name that is another entry's username, with no other
+	// display name, is that user seen in a feed.
+	var merged []*User
+	for _, u := range out {
+		if u.ID == 0 && u.Username == "" && u.DisplayName != "" {
+			j := slices.IndexFunc(out, func(o *User) bool {
+				return o != u && o.Username != "" && strings.EqualFold(o.Username, u.DisplayName) && (o.DisplayName == "" || o.DisplayName == u.DisplayName)
+			})
+			if j >= 0 {
+				merge(out[j], u)
+				continue
+			}
+		}
+		merged = append(merged, u)
+	}
+	out = merged
 	for _, u := range out {
 		u.Confidence = combine(u.Evidence)
 		sortEvidence(u.Evidence)
@@ -134,7 +183,11 @@ func (s *Scanner) enumerateUsers(ctx context.Context) []*User {
 	}
 	if s.passive() {
 		for _, f := range s.linkedFeeds() {
-			s.usersFromFeed(ctx, us, f, modePassive)
+			// A comments feed names the people who commented, who
+			// are not users of the site.
+			if !commentsFeed(f) {
+				s.usersFromFeed(ctx, us, f, modePassive)
+			}
 		}
 	}
 	if s.aggressive() {
@@ -273,7 +326,8 @@ func (s *Scanner) usersFromAuthorIDs(ctx context.Context, us *userSet, from, to 
 	s.parallel(ctx, len(ids), func(i int) {
 		id := ids[i]
 		u := s.urlWithQuery("", "author="+strconv.Itoa(id))
-		res := s.get(ctx, u)
+		// Not cached: a range of IDs would otherwise keep every page.
+		res := s.do(ctx, httpclient.Request{URL: u, MaxBody: 512 << 10})
 		if res == nil {
 			return
 		}

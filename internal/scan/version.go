@@ -15,6 +15,7 @@ import (
 
 	"github.com/theodoros997/cmsrecon/internal/corehash"
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
+	"github.com/theodoros997/cmsrecon/internal/vulndb"
 )
 
 // MinVersionConfidence is the confidence below which a version is reported
@@ -28,6 +29,7 @@ const (
 	confReadme        = 70
 	confVersionPHP    = 100
 	confHashOne       = 100 // the file hashes match one release only
+	confHashNewest    = 60  // they match the newest release the checksums know, which a later one may look like
 	confHashConfirms  = 90  // they match a few releases, among them the one the other signals found
 	confHashFew       = 50  // they match a few releases and nothing else picks one: each gets this
 	maxHashCandidates = 4
@@ -89,7 +91,7 @@ func (s *Scanner) detectVersion(ctx context.Context) *Version {
 		ev = append(ev, s.readmeVersion(ctx)...)
 		ev = append(ev, s.versionPHPSource(ctx)...)
 		if cands, u := s.hashVersion(ctx); len(cands) > 0 {
-			ev = append(ev, hashEvidence(cands, u, combineVersions(ev))...)
+			ev = append(ev, hashEvidence(cands, u, combineVersions(ev), s.data.hashes.Versions[len(s.data.hashes.Versions)-1])...)
 		}
 	}
 	return combineVersions(ev)
@@ -99,8 +101,18 @@ func (s *Scanner) detectVersion(ctx context.Context) *Version {
 // release is certain. A few (security releases often change no static
 // file) confirm the version the other signals found when it is one of
 // them; otherwise each becomes a candidate.
-func hashEvidence(cands []string, u string, others *Version) []Evidence {
+//
+// newest is the newest release the checksums know. A release that came out
+// after the last "cmsrecon update" and changed no static file looks like
+// it, so the newest release alone is not certain, and when the pages name
+// a newer release, the checksums cannot tell at all.
+func hashEvidence(cands []string, u string, others *Version, newest string) []Evidence {
+	if others.Number != "" && newest != "" && vulndb.Compare(others.Number, newest) > 0 {
+		return nil
+	}
 	switch {
+	case len(cands) == 1 && cands[0] == newest:
+		return []Evidence{{Method: "File hashes (this or a later release that changed no static file)", Mode: modeAggressive, URL: u, Value: cands[0], Confidence: confHashNewest}}
 	case len(cands) == 1:
 		return []Evidence{{Method: "File hashes", Mode: modeAggressive, URL: u, Value: cands[0], Confidence: confHashOne}}
 	case len(cands) > maxHashCandidates:

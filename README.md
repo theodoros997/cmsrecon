@@ -143,6 +143,7 @@ These are links only: cmsrecon never downloads or runs exploit code. GitHub repo
 | 3 | A pre-flight check stopped the scan: unreachable, authentication required, 403, a redirect to an out-of-scope host, not WordPress, hosted on WordPress.com, or an unfinished install. The report says why |
 | 4 | The scan reached `--max-scan-duration`; the partial report is still written |
 | 5 | The scan completed and found confirmed or likely vulnerabilities (possible ones do not count), as WPScan's exit code 5 |
+| 6 | The target kept failing or refusing requests (a rate limit, a firewall, an outage), so the scan stopped instead of reporting "nothing found"; the partial report is still written and its notices say what happened |
 | 130 | Interrupted with Ctrl-C; the partial report is still written |
 
 `cmsrecon update` exits with 0 when every requested source was updated or skipped (Wordfence without a key), 1 when a source failed (the others are still updated), 2 for an invalid command line and 130 when interrupted.
@@ -180,7 +181,7 @@ Data from each source remains subject to that provider's terms.
 
 ## Disk space and downloads
 
-The data directory holds about 10 to 25 MB once everything is downloaded; `cmsrecon update` prints the size of each source and the total. The first full update downloads about 600 MB, most of it the CVE List, and needs about 500 MB of free space while the CVE List is read: its archive is saved to the data directory, read, then deleted.
+The data directory holds about 10 to 25 MB once everything is downloaded; `cmsrecon update` prints the size of each source and the total. The first full update downloads about 600 MB, most of it the CVE List, and needs about 1 GB of free space while the CVE List is read: its archive and the archive inside it are saved to the data directory, read, then deleted (an update that was killed leaves them behind; the next one deletes them).
 
 | Source | Downloaded | Kept on disk | When |
 |---|---|---|---|

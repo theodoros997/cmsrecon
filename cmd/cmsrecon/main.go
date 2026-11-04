@@ -30,6 +30,7 @@ const (
 	exitStopped     = 3   // a pre-flight check stopped the scan; the report says why
 	exitTimedOut    = 4   // the scan reached --max-scan-duration; the partial report is still written
 	exitVulnerable  = 5   // the scan completed and found confirmed or likely vulnerabilities, as WPScan's 5
+	exitBlocked     = 6   // the target kept failing or refusing requests, so the scan stopped; the partial report is still written
 	exitInterrupted = 130 // interrupted with Ctrl-C; the partial report is still written
 )
 
@@ -161,6 +162,8 @@ func scanExit(res *scan.Result) int {
 		return exitInterrupted
 	case res.Status == scan.StatusTimedOut:
 		return exitTimedOut
+	case res.Status == scan.StatusBlocked:
+		return exitBlocked
 	case res.VulnerabilityCounts.Confirmed+res.VulnerabilityCounts.Likely > 0:
 		return exitVulnerable
 	}

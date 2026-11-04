@@ -120,3 +120,15 @@ func TestScanReportsEveryStep(t *testing.T) {
 		}
 	})
 }
+
+// runScanWith runs a scan that reports its steps to rec.
+func runScanWith(t *testing.T, o *cli.ScanOptions, rec *recorder) *Result {
+	t.Helper()
+	c, err := httpclient.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(o, c)
+	s.Steps = rec
+	return s.Run(context.Background(), nil)
+}

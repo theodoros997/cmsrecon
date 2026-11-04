@@ -60,7 +60,7 @@ func (s *Scanner) crawl(ctx context.Context) *crawlResult {
 				read++
 			}
 		}
-		st.Done(stepPages, countSummary(read, "pages read for plugins and themes", "no extra page read"))
+		s.endStep(ctx, stepPages, countSummary(read, "pages read for plugins and themes", "no extra page read"))
 	}()
 	var candidates []string
 	if idx := s.sitemapIndex(ctx); idx != nil {

@@ -15,13 +15,14 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `target` | [Target](#target) | What was scanned |
 | `detection_mode` | string | `passive`, `mixed` or `aggressive` |
 | `started_at`, `finished_at` | string | RFC 3339 UTC timestamps, second precision |
-| `status` | string | `completed`, `stopped` (a pre-flight check stopped the scan, see `stop`), `interrupted` (Ctrl-C; results are partial) or `timed_out` (`--max-scan-duration` ran out; results are partial) |
+| `status` | string | `completed`, `stopped` (a pre-flight check stopped the scan, see `stop`), `interrupted` (Ctrl-C; results are partial), `timed_out` (`--max-scan-duration` ran out; results are partial) or `blocked` (the target kept failing or refusing requests, so the scan stopped; results are partial, see `notices`) |
 | `stop` | [Stop](#stop) or null | Why the scan stopped early |
 | `web_server` | object or null | `header`: the homepage's `Server` header (empty when absent); `family`: `apache`, `nginx`, `iis` or `unknown` |
 | `wordpress` | object or null | `detected` (boolean; `false` only when `--force` scanned anyway), `content_url` (the wp-content directory, omitted when it was not seen), `evidence` ([Evidence](#evidence) list) |
 | `interesting_findings` | [Finding](#finding) list | In the order of the table below |
 | `version` | [Version](#version) or null | WordPress core version; null when the scan stopped first. `latest` and `outdated` are set when the WordPress.org data is downloaded |
-| `core_vulnerabilities` | [Vulnerability](#vulnerability) list | Core vulnerabilities that apply to `version`; empty when the version is unknown |
+| `core_vulnerabilities` | [Vulnerability](#vulnerability) list | Core vulnerabilities that apply to `version`; empty when the version is unknown. Without `--possible`, only `confirmed` and `likely` ones |
+| `core_possible_vulnerabilities` | [PossibleVulns](#possiblevulns) | A summary of the possible core vulnerabilities; omitted when there are none |
 | `main_theme` | [Theme](#theme) or null | Null when not detected, in aggressive mode (its signals are passive) or when the scan stopped first. With `--wp-auth`, the active theme |
 | `themes` | [Theme](#theme) list | The other installed themes found, without the main theme and its parent; sorted by slug |
 | `plugins` | [Plugin](#plugin) list | Sorted by slug |
@@ -33,7 +34,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `vulnerability_counts` | object | `confirmed`, `likely` and `possible`: the vulnerabilities of every component by verdict. `possible` counts the summed-up ones too (see `possible_vulnerabilities`) |
 | `notices` | string list | Things the user should know, e.g. missing or stale vulnerability data, or a list that replaced another |
 | `errors` | list | Requests that failed (`url`, `error`). A failed request does not stop the scan; the check that needed it reports nothing |
-| `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead) and `elapsed_seconds` |
+| `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead), `elapsed_seconds`, `retries` (requests sent again after a network error, a 429 or a 502-504), `blocked` (answers that were a rate limit, an overload or a firewall block page) and `failed_requests` (`errors` lists the first 100) |
 
 ## Target
 
@@ -55,6 +56,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | Code | Meaning |
 |---|---|
 | `connection_failed` | The homepage could not be fetched (DNS, TCP, TLS or timeout error) |
+| `blocked` | The homepage was a rate limit, an overload or a firewall challenge; the hint says what to do. `--force` scans anyway |
 | `http_auth_required` | HTTP 401; use `--http-auth`, or the credentials given were rejected |
 | `proxy_auth_required` | HTTP 407 from the proxy |
 | `forbidden` | HTTP 403 on the homepage without `--force` |

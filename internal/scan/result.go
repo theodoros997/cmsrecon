@@ -17,6 +17,7 @@ const (
 	StatusStopped     = "stopped"     // a pre-flight check stopped the scan; see Result.Stop
 	StatusInterrupted = "interrupted" // the user interrupted the scan; results are partial
 	StatusTimedOut    = "timed_out"   // the scan reached --max-scan-duration; results are partial
+	StatusBlocked     = "blocked"     // the target kept failing or refusing requests, so the scan stopped; results are partial
 )
 
 // Stop codes explain why a pre-flight check stopped the scan.
@@ -29,6 +30,7 @@ const (
 	StopNotWordPress      = "not_wordpress"
 	StopWordPressCom      = "wordpress_com"
 	StopUnfinishedInstall = "unfinished_install"
+	StopBlocked           = "blocked" // the homepage was a rate limit, an overload or a firewall challenge
 )
 
 // Severities of interesting findings, lowest first.
@@ -56,6 +58,7 @@ type Result struct {
 	InterestingFindings []Finding       `json:"interesting_findings"`
 	Version             *Version        `json:"version"`
 	CoreVulnerabilities []Vulnerability `json:"core_vulnerabilities"`
+	CorePossible        *PossibleVulns  `json:"core_possible_vulnerabilities,omitempty"`
 	MainTheme           *Theme          `json:"main_theme"`
 	Themes              []*Theme        `json:"themes"`
 	Plugins             []*Plugin       `json:"plugins"`
@@ -323,6 +326,9 @@ type Stats struct {
 	BytesSent      int64   `json:"bytes_sent"`
 	BytesReceived  int64   `json:"bytes_received"`
 	ElapsedSeconds float64 `json:"elapsed_seconds"`
+	Retries        int64   `json:"retries"`         // requests sent again after a network error, a 429 or a 502-504
+	Blocked        int64   `json:"blocked"`         // answers that were a rate limit, an overload or a firewall block page
+	FailedRequests int     `json:"failed_requests"` // requests that failed; errors lists the first maxErrors of them
 }
 
 // normalize replaces nil slices with empty ones so the JSON report always

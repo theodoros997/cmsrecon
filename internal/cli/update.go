@@ -115,7 +115,7 @@ Options:
 Set GITHUB_TOKEN to raise GitHub's API rate limit for the CVE List.
 
 The data directory holds about 10 to 25 MB; the update prints the size of
-each source and the total. The CVE List needs about 500 MB of free space
+each source and the total. The CVE List needs about 1 GB of free space
 while it is read. With a Wordfence key, leaving it out of --sources saves
 most of the download.
 

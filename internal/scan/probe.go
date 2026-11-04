@@ -96,6 +96,11 @@ func (s *Scanner) probeOne(ctx context.Context, u string) (probeHit, bool) {
 		return probeHit{}, false
 	}
 	b := s.baselineFor(ctx, ref)
+	if b == nil {
+		// Without the answer to a random path, nothing tells a catch-all
+		// site from a real hit: only a listing or a clear answer counts.
+		return s.probeGet(ctx, u, ref)
+	}
 	if s.headRefused.Load() {
 		return s.probeGet(ctx, u, ref)
 	}
@@ -104,12 +109,17 @@ func (s *Scanner) probeOne(ctx context.Context, u string) (probeHit, bool) {
 		return probeHit{}, false
 	}
 	switch {
+	case res.Blocked != "":
+		// A rate limit, an overload or a block page: unknown, not found.
+		s.probeBlocked.Add(1)
+		return probeHit{}, false
 	case res.StatusCode == http.StatusMethodNotAllowed || res.StatusCode == http.StatusNotImplemented:
 		s.headRefused.Store(true)
 		return s.probeGet(ctx, u, ref)
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusGone:
 		return probeHit{}, false
-	case b != nil && res.StatusCode == b.resp.StatusCode:
+	case res.StatusCode == s.headStatus(ctx, ref, b) || res.StatusCode == b.resp.StatusCode:
+		// The same answer a random path gets: only the bodies can tell.
 		return s.probeGet(ctx, u, ref)
 	case res.IsRedirect():
 		// A directory may redirect to itself (adding a slash, switching
@@ -125,10 +135,19 @@ func (s *Scanner) probeOne(ctx context.Context, u string) (probeHit, bool) {
 
 func (s *Scanner) probeGet(ctx context.Context, u string, ref *url.URL) (probeHit, bool) {
 	res := s.do(ctx, httpclient.Request{URL: u})
+	if res != nil && res.Blocked != "" {
+		s.probeBlocked.Add(1)
+		return probeHit{}, false
+	}
 	if res == nil || res.IsRedirect() || s.isNotFound(ctx, ref, res) {
 		return probeHit{}, false
 	}
 	h := probeHit{url: u, status: res.StatusCode}
 	h.listing, h.listed = s.dirListing(res)
+	if !h.listed && s.baselineFor(ctx, ref) == nil {
+		// No baseline to compare with: a 200 or a 403 may be what every
+		// path gets. Only a listing proves the path.
+		return probeHit{}, false
+	}
 	return h, true
 }
