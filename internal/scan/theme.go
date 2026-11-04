@@ -81,9 +81,13 @@ func (s *Scanner) detectMainTheme(ctx context.Context, core *Version) *Theme {
 		// A child theme's style.css is enqueued after its parent's, so only
 		// the last theme style.css on the page counts as the main theme's.
 		var lastStyle *url.URL
-		for _, href := range p.linksTo("stylesheet") {
+		for _, link := range p.linksTo("stylesheet") {
+			href, ok := s.siteURL(link)
+			if !ok {
+				continue
+			}
 			slug, _ := slugOf(href)
-			if slug == "" || !s.client.InScope(href) || path.Base(href.Path) != "style.css" {
+			if slug == "" || path.Base(href.Path) != "style.css" {
 				continue
 			}
 			lastStyle = href
@@ -99,7 +103,7 @@ func (s *Scanner) detectMainTheme(ctx context.Context, core *Version) *Theme {
 
 		counts := map[string]int{}
 		locs := map[string]string{}
-		for _, u := range s.scopedURLs(p.page) {
+		for _, u := range s.siteURLs(p.page) {
 			if slug, loc := slugOf(u); slug != "" {
 				counts[slug]++
 				locs[slug] = loc

@@ -149,7 +149,7 @@ func (s *Scanner) checkReadme(ctx context.Context) []Finding {
 	}
 	var found []string
 	for _, name := range []string{"readme.html", "olvasdel.html", "lisenssi.html", "liesmich.html"} {
-		u := s.url(name)
+		u := s.coreURL(name)
 		res := s.get(ctx, u)
 		if res == nil || res.StatusCode != 200 || !bytes.Contains(bytes.ToLower(res.Body), []byte("wordpress")) {
 			continue
@@ -210,7 +210,7 @@ func (s *Scanner) checkFullPathDisclosure(ctx context.Context) []Finding {
 	}
 	urls := make([]string, 0, len(fullPathFiles)+1)
 	for _, f := range fullPathFiles {
-		urls = append(urls, s.url(f))
+		urls = append(urls, s.coreURL(f))
 	}
 	// Hello Dolly ships with WordPress but is often deleted.
 	urls = append(urls, under(s.plugins, "hello.php"))
@@ -276,7 +276,7 @@ func (s *Scanner) checkMultisite(ctx context.Context) []Finding {
 	if !s.aggressive() {
 		return nil
 	}
-	u := s.url("wp-signup.php")
+	u := s.coreURL("wp-signup.php")
 	res := s.get(ctx, u)
 	if res == nil {
 		return nil
@@ -341,7 +341,7 @@ func (s *Scanner) checkRegistration(ctx context.Context) []Finding {
 	if !s.aggressive() {
 		return nil
 	}
-	u := s.urlWithQuery("wp-login.php", "action=register")
+	u := s.coreURL("wp-login.php") + "?action=register"
 	// A network redirects registration to wp-signup.php; follow a few
 	// in-scope redirects to see the form.
 	cur := u
@@ -481,7 +481,7 @@ func (s *Scanner) checkWPCron(ctx context.Context) []Finding {
 	if !s.aggressive() {
 		return nil
 	}
-	u := s.url("wp-cron.php")
+	u := s.coreURL("wp-cron.php")
 	if res, _ := s.presentFile(ctx, u, nil); res != nil {
 		f := finding(idWPCron, "The external WP-Cron seems to be enabled", SeverityInfo, u, direct(u, 60),
 			"Anyone can trigger scheduled tasks; repeated requests can load the server")
@@ -497,7 +497,7 @@ func (s *Scanner) checkPHPDisabled(ctx context.Context) []Finding {
 	if !s.aggressive() {
 		return nil
 	}
-	u := s.url("wp-includes/version.php")
+	u := s.coreURL("wp-includes/version.php")
 	res := s.get(ctx, u)
 	if res == nil || res.StatusCode != 200 || !bytes.Contains(res.Body, []byte("<?php")) {
 		return nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -196,13 +197,56 @@ func (s *Scanner) enumerateUsers(ctx context.Context) []*User {
 		wg.Go(func() { s.usersFromREST(ctx, us) })
 		wg.Go(func() { s.usersFromOEmbed(ctx, us) })
 		wg.Go(func() {
-			s.usersFromSitemap(ctx, us, s.url("wp-sitemap-users-1.xml"), "WordPress users sitemap")
-			s.usersFromSitemap(ctx, us, s.url("author-sitemap.xml"), "Yoast author sitemap")
+			// The author sitemaps the sitemap index lists, then the
+			// usual names (the index can be missing or unlinked).
+			sitemaps := map[string]string{s.url("wp-sitemap-users-1.xml"): "WordPress users sitemap", s.url("author-sitemap.xml"): "Yoast author sitemap"}
+			for kind, u := range s.sitePages(ctx).postTypes {
+				if kind == "users" || kind == "author" {
+					sitemaps[u] = "Author sitemap in the sitemap index"
+				}
+			}
+			for _, u := range slices.Sorted(maps.Keys(sitemaps)) {
+				s.usersFromSitemap(ctx, us, u, sitemaps[u])
+			}
 		})
 		wg.Go(func() { s.usersFromAuthorIDs(ctx, us, ids.From, ids.To) })
 		wg.Wait()
 	}
 	return us.list()
+}
+
+// usersFromPosts reads the authors WordPress embeds in the REST API's
+// posts (?_embed=author), which stays open on many sites that close the
+// users route.
+func (s *Scanner) usersFromPosts(ctx context.Context, us *userSet, api *restAPI) {
+	q := "per_page=100&_embed=author&_fields=author,_links,_embedded"
+	u := s.urlWithQuery("wp-json/wp/v2/posts", q)
+	if api != nil {
+		u = api.route("wp/v2/posts", q)
+	}
+	res := s.get(ctx, u)
+	if res == nil || res.StatusCode != http.StatusOK {
+		return
+	}
+	var posts []struct {
+		Embedded struct {
+			Author []struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+				Slug string `json:"slug"`
+			} `json:"author"`
+		} `json:"_embedded"`
+	}
+	if json.Unmarshal(res.Body, &posts) != nil {
+		return
+	}
+	for _, p := range posts {
+		for _, a := range p.Embedded.Author {
+			if a.ID > 0 && a.Slug != "" {
+				us.add(a.ID, a.Slug, a.Name, Evidence{Method: "Post authors in the REST API", Mode: modeAggressive, URL: u, Value: a.Slug, Confidence: confUserDirect})
+			}
+		}
+	}
 }
 
 func (s *Scanner) usersFromFeed(ctx context.Context, us *userSet, u, mode string) {
@@ -222,21 +266,31 @@ func (s *Scanner) usersFromFeed(ctx context.Context, us *userSet, u, mode string
 }
 
 // usersFromREST pages through /wp/v2/users, which lists the authors of
-// published posts unless a plugin restricts it.
+// published posts unless a plugin restricts it. A firewall rule often
+// blocks only the /wp-json/ path, so ?rest_route= is tried when it fails,
+// and when the users route is closed, the authors embedded in the posts.
 func (s *Scanner) usersFromREST(ctx context.Context, us *userSet) {
 	api := s.rest(ctx)
 	var routes []func(page int) string
 	if api != nil {
 		routes = append(routes, func(page int) string { return api.route("wp/v2/users", fmt.Sprintf("per_page=100&page=%d", page)) })
-	} else {
-		routes = append(routes,
-			func(page int) string {
-				return s.urlWithQuery("wp-json/wp/v2/users", fmt.Sprintf("per_page=100&page=%d", page))
-			},
-			func(page int) string {
-				return s.urlWithQuery("", "rest_route="+url.QueryEscape("/wp/v2/users")+fmt.Sprintf("&per_page=100&page=%d", page))
-			})
 	}
+	if api == nil || !api.query {
+		routes = append(routes, func(page int) string {
+			return s.urlWithQuery("", "rest_route="+url.QueryEscape("/wp/v2/users")+fmt.Sprintf("&per_page=100&page=%d", page))
+		})
+	}
+	if api == nil {
+		routes = append([]func(int) string{func(page int) string {
+			return s.urlWithQuery("wp-json/wp/v2/users", fmt.Sprintf("per_page=100&page=%d", page))
+		}}, routes...)
+	}
+	anyFound := false
+	defer func() {
+		if !anyFound {
+			s.usersFromPosts(ctx, us, api)
+		}
+	}()
 	for _, route := range routes {
 		found := false
 		for page := 1; page <= 10; page++ {
@@ -263,6 +317,7 @@ func (s *Scanner) usersFromREST(ctx context.Context, us *userSet) {
 			}
 		}
 		if found {
+			anyFound = true
 			return
 		}
 	}

@@ -81,7 +81,7 @@ func (s *Scanner) crawl(ctx context.Context) *crawlResult {
 		}
 	}
 	// The login page loads security, captcha and social login plugins.
-	login := s.url("wp-login.php")
+	login := s.coreURL("wp-login.php")
 	urls = append(urls, login)
 
 	st.Update(stepPages, fmt.Sprintf("%d pages", len(urls)))

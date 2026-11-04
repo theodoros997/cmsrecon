@@ -41,6 +41,7 @@ func (s *Scanner) preflight(ctx context.Context) bool {
 		s.plugins = s.dirOption(s.opts.PluginsDir)
 	}
 	s.themes = s.content.ResolveReference(&url.URL{Path: "themes/"})
+	s.core = s.detectCoreRoot()
 
 	if s.wordPressCom(contentFound) {
 		s.stop(StopWordPressCom, "The site is hosted on WordPress.com.",
@@ -250,7 +251,15 @@ func (s *Scanner) detectContentDir() (*url.URL, bool) {
 	counts := map[string]int{}
 	custom := map[string]int{}
 	for _, p := range s.pages() {
-		for _, u := range s.scopedURLs(p.page) {
+		for _, orig := range p.urls {
+			// Jetpack's CDN paths say nothing about where wp-content is.
+			if jetpackHostRe.MatchString(orig.Hostname()) {
+				continue
+			}
+			u, ok := s.siteURL(orig)
+			if !ok {
+				continue
+			}
 			if i := strings.Index(u.Path, "/wp-content/"); i >= 0 {
 				counts[u.Path[:i+len("/wp-content/")]]++
 			} else if m := customContentRe.FindStringSubmatch(u.Path); m != nil && strings.EqualFold(u.Hostname(), s.base.Hostname()) {
@@ -271,6 +280,47 @@ func (s *Scanner) detectContentDir() (*url.URL, bool) {
 		return s.base.ResolveReference(&url.URL{Path: "wp-content/"}), false
 	}
 	return s.base.ResolveReference(&url.URL{Path: best}), true
+}
+
+// detectCoreRoot finds where WordPress's own files are from the pages'
+// /wp-includes/ URLs: the site root on most sites, /wp/ on Bedrock and on
+// sites that give WordPress its own directory.
+func (s *Scanner) detectCoreRoot() *url.URL {
+	counts := map[string]int{}
+	for _, p := range s.pages() {
+		for _, orig := range p.urls {
+			if jetpackHostRe.MatchString(orig.Hostname()) {
+				continue
+			}
+			u, ok := s.siteURL(orig)
+			if !ok {
+				continue
+			}
+			if i := strings.Index(u.Path, "/wp-includes/"); i >= 0 && strings.HasPrefix(u.Path, s.base.Path) {
+				counts[u.Path[:i+1]]++
+			}
+		}
+	}
+	best, n := "", 0
+	for p, c := range counts {
+		if c > n || (c == n && p < best) {
+			best, n = p, c
+		}
+	}
+	if best == "" {
+		return s.base
+	}
+	return s.base.ResolveReference(&url.URL{Path: best})
+}
+
+// coreURL resolves ref against WordPress's own directory, e.g.
+// "wp-includes/version.php" or "wp-login.php".
+func (s *Scanner) coreURL(ref string) string {
+	root := s.core
+	if root == nil {
+		root = s.base
+	}
+	return root.ResolveReference(&url.URL{Path: ref}).String()
 }
 
 var wpcomAssetRe = regexp.MustCompile(`(?i)^(?:s\d+\.wp\.com|[a-z0-9-]+\.files\.wordpress\.com)$`)
@@ -338,7 +388,7 @@ func (s *Scanner) detectWordPress(ctx context.Context) *WordPress {
 		})
 	}
 	if len(wp.Evidence) == 0 && s.aggressive() {
-		u := s.url("wp-login.php")
+		u := s.coreURL("wp-login.php")
 		if res := s.get(ctx, u); res != nil && res.StatusCode == 200 && loginFormRe.Match(res.Body) {
 			wp.Evidence = append(wp.Evidence, Evidence{
 				Method: "Login page", Mode: modeAggressive, URL: u, Confidence: 90,

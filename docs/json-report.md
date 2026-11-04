@@ -184,6 +184,7 @@ The vulnerabilities that only may apply to a plugin or theme, because its versio
 | `name` | string | The library, named as in the retire.js repository (`jquery`, `jquery-ui`, `bootstrap`, `moment.js`, …) |
 | `version` | [Version](#version) | `number` is empty when unknown |
 | `urls` | string list | Where it was seen, at most five |
+| `bundled_with_core` | boolean | The copy WordPress ships in `wp-includes`, updated with WordPress; omitted when false. Each copy of a library (another version, in a plugin) is its own entry |
 | `vulnerabilities` | [Vulnerability](#vulnerability) list | Only matched when the version is known |
 
 ## User

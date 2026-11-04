@@ -386,6 +386,9 @@ func (p *printer) jsLibraries(libs []*scan.JSLibrary) {
 		} else if l.Version.Confidence < 100 {
 			p.detail("Version confidence: %d%%", l.Version.Confidence)
 		}
+		if l.Bundled {
+			p.detail("The copy WordPress ships in wp-includes: it is updated with WordPress, not on its own")
+		}
 		urls := l.URLs
 		if !p.o.Verbose && len(urls) > 1 {
 			urls = urls[:1]

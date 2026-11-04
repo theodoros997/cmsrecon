@@ -28,6 +28,7 @@ const (
 	confFeedGenerator = 80
 	confReadme        = 70
 	confVersionPHP    = 100
+	confLoadStyles    = 60  // ?ver= on load-styles.php or load-scripts.php, which WordPress sets to its version
 	confHashOne       = 100 // the file hashes match one release only
 	confHashNewest    = 60  // they match the newest release the checksums know, which a later one may look like
 	confHashConfirms  = 90  // they match a few releases, among them the one the other signals found
@@ -71,7 +72,7 @@ func (s *Scanner) detectVersion(ctx context.Context) *Version {
 	linked := map[string]bool{}
 	if s.passive() {
 		ev = append(ev, s.metaGeneratorVersion()...)
-		ev = append(ev, s.coreAssetVersions()...)
+		ev = append(ev, s.coreAssetVersions(s.pages())...)
 		for _, u := range s.linkedFeeds() {
 			linked[u] = true
 			ev = append(ev, s.feedVersion(ctx, u, modePassive)...)
@@ -88,6 +89,9 @@ func (s *Scanner) detectVersion(ctx context.Context) *Version {
 			// Without pretty permalinks the feed lives at ?feed=rss2.
 			ev = append(ev, s.feedVersion(ctx, s.urlWithQuery("", "feed=rss2"), modeAggressive)...)
 		}
+		// The crawled pages, the login page among them, load core assets
+		// too (load-styles.php keeps ?ver= when themes strip it).
+		ev = append(ev, s.coreAssetVersions(s.sitePages(ctx).pages)...)
 		ev = append(ev, s.readmeVersion(ctx)...)
 		ev = append(ev, s.versionPHPSource(ctx)...)
 		if cands, u := s.hashVersion(ctx); len(cands) > 0 {
@@ -154,7 +158,7 @@ func (s *Scanner) hashVersion(ctx context.Context) ([]string, string) {
 		if !ok {
 			break
 		}
-		u := s.url(path)
+		u := s.coreURL(path)
 		res := s.do(ctx, httpclient.Request{URL: u, MaxBody: 4 << 20})
 		if res == nil || res.StatusCode != http.StatusOK || res.Truncated || (isHTML(res.Body) && !strings.HasSuffix(path, ".html")) {
 			p.Skip(path)
@@ -250,17 +254,38 @@ func (s *Scanner) metaGeneratorVersion() []Evidence {
 // coreAssetVersions reads ?ver= from core scripts and styles under
 // wp-includes. WordPress stamps its own version on them, so the more core
 // assets agree, the higher the confidence: 30% for one, up to 60% for four.
-func (s *Scanner) coreAssetVersions() []Evidence {
+func (s *Scanner) coreAssetVersions(pages []labelledPage) []Evidence {
 	assets := map[string]map[string]bool{} // version -> asset paths
 	example := map[string]string{}
-	for _, p := range s.pages() {
-		for _, u := range s.scopedURLs(p.page) {
-			_, rel, ok := strings.Cut(u.Path, "/wp-includes/")
-			if !ok || isCoreVendor(rel) {
+	loaders := map[string]string{} // version -> a load-styles.php or load-scripts.php URL
+	mode := modePassive
+	for _, p := range pages {
+		for _, orig := range p.urls {
+			u, ok := s.siteURL(orig)
+			if !ok {
+				continue
+			}
+			// The core's own scripts and styles: wp-includes, minus the
+			// libraries it bundles, and wp-admin's CSS and the
+			// load-styles.php and load-scripts.php the login page uses.
+			_, rel, inc := strings.Cut(u.Path, "/wp-includes/")
+			_, admin, adm := strings.Cut(u.Path, "/wp-admin/")
+			switch {
+			case inc && !isCoreVendor(rel):
+			case adm && (admin == "load-styles.php" || admin == "load-scripts.php" || strings.HasPrefix(admin, "css/")):
+			default:
 				continue
 			}
 			ver := u.Query().Get("ver")
 			if !validVersion(ver) {
+				continue
+			}
+			if p.mode == modeAggressive {
+				mode = modeAggressive
+			}
+			// WordPress always sets these to its own version.
+			if adm && (admin == "load-styles.php" || admin == "load-scripts.php") {
+				loaders[ver] = u.String()
 				continue
 			}
 			if assets[ver] == nil {
@@ -271,9 +296,12 @@ func (s *Scanner) coreAssetVersions() []Evidence {
 		}
 	}
 	var ev []Evidence
+	for ver, u := range loaders {
+		ev = append(ev, Evidence{Method: "?ver= on wp-admin's load-styles.php", Mode: mode, URL: u, Value: ver, Confidence: confLoadStyles})
+	}
 	for ver, paths := range assets {
 		ev = append(ev, Evidence{
-			Method: "?ver= on core assets", Mode: modePassive, URL: example[ver], Value: ver,
+			Method: "?ver= on core assets", Mode: mode, URL: example[ver], Value: ver,
 			Confidence: min(20+10*len(paths), 60),
 		})
 	}
@@ -338,7 +366,7 @@ func (s *Scanner) feedVersion(ctx context.Context, u, mode string) []Evidence {
 }
 
 func (s *Scanner) readmeVersion(ctx context.Context) []Evidence {
-	u := s.url("readme.html")
+	u := s.coreURL("readme.html")
 	res := s.get(ctx, u)
 	if res == nil || res.StatusCode != 200 {
 		return nil
@@ -353,7 +381,7 @@ func (s *Scanner) readmeVersion(ctx context.Context) []Evidence {
 
 // versionPHPSource reads $wp_version when the server returns PHP source.
 func (s *Scanner) versionPHPSource(ctx context.Context) []Evidence {
-	u := s.url("wp-includes/version.php")
+	u := s.coreURL("wp-includes/version.php")
 	res := s.get(ctx, u)
 	if res == nil || res.StatusCode != 200 || !bytes.Contains(res.Body, []byte("<?php")) {
 		return nil

@@ -42,6 +42,7 @@ type Scanner struct {
 	home     *page
 	notFound *page    // the answer to a random path: the site's 404 page
 	content  *url.URL // the wp-content directory on the target host
+	core     *url.URL // where WordPress's own files are: the site root, or /wp/ for Bedrock
 	plugins  *url.URL // the plugins directory: <content>/plugins/ or --wp-plugins-dir
 	themes   *url.URL // the themes directory: <content>/themes/
 	server   string   // web server family
@@ -55,12 +56,14 @@ type Scanner struct {
 	headRefused  atomic.Bool  // the server answers HEAD with 405 or 501
 	probeBlocked atomic.Int64 // brute-force answers that were a rate limit or a block page
 
-	restOnce  sync.Once
-	restAPI   *restAPI
-	crawlOnce sync.Once
-	crawled   *crawlResult
-	invOnce   sync.Once
-	inv       *inventory
+	restOnce     sync.Once
+	restAPI      *restAPI
+	crawlOnce    sync.Once
+	crawled      *crawlResult
+	combinedOnce sync.Once
+	combined     []combinedFile
+	invOnce      sync.Once
+	inv          *inventory
 
 	mu  sync.Mutex // guards res
 	res *Result

@@ -65,6 +65,12 @@ func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 		if s.aggressive() {
 			s.fromListing(ctx, set, s.plugins, nil)
 			s.pluginsFromPostTypes(ctx, set)
+			for _, f := range s.combinedFiles(ctx) {
+				for _, slug := range slugsInCombined(f.body, s.plugins.Path) {
+					set.add(slug, Evidence{Method: "Paths in a combined CSS or JS file", Mode: modeAggressive, URL: f.url, Value: prefixTail(s.plugins.Path) + slug + "/", Confidence: confPluginURLs})
+					set.observe(slug, "")
+				}
+			}
 		}
 	}
 	list := s.opts.Enumerate.Plugins
@@ -259,12 +265,12 @@ func (s *Scanner) pluginsFromPages(set *componentSet, pages []labelledPage, pref
 	passive := map[string]bool{} // the plugin's assets were seen on a passive page
 	for _, p := range pages {
 		seen := map[string]bool{}
-		for _, u := range p.urls {
-			path, ok := s.sitePath(u)
+		for _, orig := range p.urls {
+			u, ok := s.siteURL(orig)
 			if !ok {
 				continue
 			}
-			slug := slugIn(path, prefix)
+			slug := slugIn(u.Path, prefix)
 			if slug == "" {
 				continue
 			}
@@ -285,12 +291,23 @@ func (s *Scanner) pluginsFromPages(set *componentSet, pages []labelledPage, pref
 			}
 		}
 	}
+	// A ?ver= that the assets of three plugins or more share is the
+	// WordPress version (hidden elsewhere) or a cache buster, not theirs.
+	shared := map[string]int{}
+	for _, urls := range assets {
+		for v := range s.assetVersions(urls, core) {
+			shared[v]++
+		}
+	}
 	for k, urls := range assets {
 		mode := modeAggressive
 		if passive[k] {
 			mode = modePassive
 		}
 		for v, paths := range s.assetVersions(urls, core) {
+			if shared[v] >= 3 {
+				continue
+			}
 			var example string
 			for _, u := range urls {
 				if u.Query().Get("ver") == v {
@@ -397,7 +414,7 @@ func (s *Scanner) pluginsFromREST(ctx context.Context, set *componentSet) {
 // plugins directory.
 func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *component, dir *url.URL) {
 	base := under(dir, c.slug+"/")
-	for _, name := range []string{"readme.txt", "README.txt"} {
+	for _, name := range []string{"readme.txt", "README.txt", "readme.md"} {
 		u := base + name
 		res := s.get(ctx, u)
 		if res == nil || res.StatusCode != 200 {
@@ -419,7 +436,9 @@ func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *componen
 		if info.changelog != "" {
 			c.versions = append(c.versions, Evidence{Method: name + " changelog", Mode: modeAggressive, URL: u, Value: info.changelog, Confidence: confVersionChangelog})
 		}
-		hasVersion := len(c.versions) > 0
+		// Only the readme's own version ends the search: a ?ver= seen on
+		// the pages is often the WordPress version or a cache buster.
+		hasVersion := info.stableTag != "" || info.changelog != ""
 		set.mu.Unlock()
 		if hasVersion {
 			return
@@ -427,7 +446,7 @@ func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *componen
 		break
 	}
 	// No version yet: some plugins keep the changelog in its own file.
-	for _, name := range []string{"changelog.txt", "CHANGELOG.md"} {
+	for _, name := range []string{"changelog.txt", "CHANGELOG.md", "CHANGELOG.txt"} {
 		u := base + name
 		res := s.get(ctx, u)
 		if res == nil || res.StatusCode != 200 {

@@ -229,6 +229,9 @@ type JSLibrary struct {
 	Name    string   `json:"name"`
 	Version *Version `json:"version"`
 	URLs    []string `json:"urls"` // where it was seen, at most five
+	// Bundled is set for the copies WordPress ships in wp-includes: they
+	// are updated with WordPress, not on their own.
+	Bundled bool `json:"bundled_with_core,omitempty"`
 
 	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
 }
