@@ -211,7 +211,12 @@ Versions outside every source's range are not reported. Each match shows the aff
 | CLI (colored, `--no-color`, `-v` for evidence, `--possible` to list possible vulnerabilities) | v1 **built** |
 | Live progress on stderr when it is a terminal: a status line with the running steps, the elapsed time and the request count, and a line for each finished step with its result (`--no-progress` to turn it off). `cmsrecon update` shows each source the same way, with the megabytes downloaded and the speed | v1 **built** |
 | JSON, documented in [json-report.md](json-report.md) | v1 **built** |
-| SARIF, HTML | v1.1 |
+| A summary at the end of the CLI report and in the JSON: the critical, high and medium findings and the confirmed and likely vulnerabilities, most severe first; "not checked" instead of "none" without vulnerability data | v1 **built** |
+| HTML (one self-contained page: no script, no external file, printable) and Markdown, with every value from the target escaped; `cmsrecon report scan.json -o scan.html` renders a saved JSON report again. Without `-f`, the format follows the `-o` file's extension | v1 **built** |
+| A short summary on stderr when the report goes to a file | v1 **built** |
+| `--log-requests FILE`: every request with its time, method, status, size, duration and error, tab separated | v1 **built** |
+| `--dry-run` with the data the scan would use and about how many requests it would send | v1 **built** |
+| SARIF | v1.1 |
 
 Exit code 5 says the scan found confirmed or likely vulnerabilities, as WPScan's does; see the [README](../README.md#exit-codes).
 
@@ -245,3 +250,7 @@ What WPScan does, from its public documentation and the names of its finders, an
 | Exploit references (Exploit-DB, Metasploit) in its vulnerability data | Built from Exploit-DB, Metasploit, Nuclei templates and PoC-in-GitHub, by CVE, with how far each source can be trusted |
 | `--plugins-threshold` / `--themes-threshold` | Not needed: brute force is off by default and its size is chosen with `-e` |
 | JavaScript library vulnerabilities | Not a WPScan finder; built in cmsrecon |
+| `--vhost`, `--login-uri` | Built, plus `--resolve` to connect to a given address (a server behind a CDN) |
+| Option names (`--url`, `--max-threads`, `--request-timeout`, `--disable-tls-checks`, `--rua`, `--cookie-string`, `--headers`) and units (`--throttle` in milliseconds, `--request-timeout` in seconds) | Accepted as aliases; options cmsrecon does not have, such as `--passwords`, get an error that says why or what to use |
+| Config file (`~/.wpscan/scan.yml`) | `<user config dir>/cmsrecon/config`, one `option = value` per line, for both the scan and the update |
+| CLI and JSON output | Built, plus HTML and Markdown reports and `cmsrecon report` to render a saved scan again |

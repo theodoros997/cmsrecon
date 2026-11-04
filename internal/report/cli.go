@@ -153,6 +153,7 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 	}
 	if completed || r.Status == scan.StatusInterrupted || r.Status == scan.StatusTimedOut || r.Status == scan.StatusBlocked {
 		p.vulnSummary(r)
+		p.summary(r)
 	}
 	p.errors(r.Errors, r.Stats.FailedRequests)
 
@@ -638,7 +639,11 @@ func (p *printer) vuln(v scan.Vulnerability, indent string) {
 	if sev == "" {
 		sev = "UNRATED"
 	}
-	p.detail("%s%s %s", indent, p.style(severityStyle[v.Severity], "["+sev+"]"), v.Title)
+	title := v.Title
+	if !p.o.Verbose {
+		title = scan.ShortTitle(title)
+	}
+	p.detail("%s%s %s", indent, p.style(severityStyle[v.Severity], "["+sev+"]"), title)
 	parts := []string{p.style(verdictStyle[v.Verdict], v.Verdict)}
 	if len(v.CVE) > 0 {
 		parts = append(parts, strings.Join(v.CVE, ", "))
@@ -829,6 +834,79 @@ func listedPossible(r *scan.Result) bool {
 	return false
 }
 
+// summary lists the most serious findings and vulnerabilities, most
+// severe first, so that a long report ends with what matters.
+func (p *printer) summary(r *scan.Result) {
+	s := r.Summary
+	if s == nil {
+		return
+	}
+	p.heading("Summary")
+	if len(s.Risks) == 0 {
+		if s.VulnerabilitiesChecked {
+			p.good("No critical, high or medium finding, and no confirmed or likely vulnerability")
+		} else {
+			p.info("No critical, high or medium finding; vulnerabilities were not checked (no vulnerability data)")
+		}
+		return
+	}
+	for _, rk := range s.Risks {
+		line := rk.Line()
+		if rk.URL != "" {
+			line += " - " + rk.URL
+		}
+		switch rk.Severity {
+		case scan.SeverityCritical, scan.SeverityHigh:
+			p.bad("%s", p.style(severityStyle[rk.Severity], line))
+		default:
+			p.info("%s", line)
+		}
+	}
+	if s.MoreRisks > 0 {
+		p.detail("%d more in the full report", s.MoreRisks)
+	}
+}
+
+// WriteBrief writes what was found and the summary in a few lines, for
+// stderr when the report itself goes to a file.
+func WriteBrief(w io.Writer, r *scan.Result, o Options) error {
+	p := &printer{w: w, o: o}
+	if r.Summary == nil {
+		r.Summary = scan.Summarize(r)
+	}
+	var found []string
+	if r.Version != nil && r.Version.Number != "" {
+		found = append(found, "WordPress "+r.Version.Number)
+	}
+	themes := len(r.Themes)
+	for t := r.MainTheme; t != nil; t = t.Parent {
+		themes++
+	}
+	for _, x := range []struct {
+		n    int
+		noun string
+	}{{len(r.Plugins), "plugin"}, {themes, "theme"}, {len(r.JSLibraries), "JavaScript library"}, {len(r.Users), "user"},
+		{len(r.InterestingFindings), "interesting finding"}} {
+		if x.n > 0 {
+			found = append(found, plural(x.n, x.noun))
+		}
+	}
+	if len(found) > 0 {
+		p.good("Found: %s", strings.Join(found, ", "))
+	}
+	c := r.VulnerabilityCounts
+	switch {
+	case !r.Summary.VulnerabilitiesChecked:
+		p.bad("Vulnerabilities not checked: there is no vulnerability data (run \"cmsrecon update\")")
+	case c.Confirmed+c.Likely > 0:
+		p.bad("Vulnerabilities: %s", countsText(c))
+	default:
+		p.good("Vulnerabilities: %s", countsText(c))
+	}
+	p.summary(r)
+	return p.err
+}
+
 func (p *printer) vulnSummary(r *scan.Result) {
 	p.heading("Vulnerabilities")
 	c := r.VulnerabilityCounts
@@ -841,6 +919,8 @@ func (p *printer) vulnSummary(r *scan.Result) {
 		p.bad("%s", text)
 	case c.Possible > 0:
 		p.info("%s", text)
+	case r.Summary != nil && !r.Summary.VulnerabilitiesChecked:
+		p.bad("Not checked: there is no vulnerability data. Run \"cmsrecon update\" (with a free Wordfence key for the best data)")
 	default:
 		p.good("None matched")
 	}
@@ -944,6 +1024,9 @@ func formatSeconds(s float64) string {
 func plural(n int, noun string) string {
 	if n == 1 {
 		return "1 " + noun
+	}
+	if base, ok := strings.CutSuffix(noun, "y"); ok && !strings.HasSuffix(base, "e") {
+		return fmt.Sprintf("%d %sies", n, base) // library, entry
 	}
 	return fmt.Sprintf("%d %ss", n, noun)
 }

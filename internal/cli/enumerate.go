@@ -65,27 +65,37 @@ type Enumeration struct {
 
 // ParseEnumeration parses a comma-separated enumeration spec such as
 // "vp,vt,cb,dbe,bf,u1-20". "none" or an empty spec enumerates nothing.
+// A choice that starts with "+" adds to the default list instead of
+// replacing it: "+tt,+m" is "vp,vt,cb,dbe,bf,u,tt,m", and "+ap" swaps the
+// vulnerable plugins for all of them.
 func ParseEnumeration(spec string) (Enumeration, error) {
 	var e Enumeration
 	spec = strings.TrimSpace(spec)
 	if spec == "" || strings.EqualFold(spec, "none") {
 		return e, nil
 	}
+	additive := strings.HasPrefix(spec, "+") || strings.Contains(spec, ",+")
+	if additive {
+		e, _ = ParseEnumeration(DefaultEnumeration)
+	}
+	pluginsGiven, themesGiven := false, false
 
 	for _, tok := range strings.Split(spec, ",") {
-		tok = strings.ToLower(strings.TrimSpace(tok))
+		tok = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(tok)), "+")
 		switch tok {
 		case "":
 			continue
 		case "vp", "p", "ap":
-			if e.Plugins != ItemsNone {
+			if pluginsGiven {
 				return e, fmt.Errorf("enumerate: vp, p and ap are mutually exclusive")
 			}
+			pluginsGiven = true
 			e.Plugins = itemSetFor(tok)
 		case "vt", "t", "at":
-			if e.Themes != ItemsNone {
+			if themesGiven {
 				return e, fmt.Errorf("enumerate: vt, t and at are mutually exclusive")
 			}
+			themesGiven = true
 			e.Themes = itemSetFor(tok)
 		case "cb":
 			e.ConfigBackups = true

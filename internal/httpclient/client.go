@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,6 +105,9 @@ type Client struct {
 	requests, sent, received atomic.Int64
 	retries, blocked         atomic.Int64
 
+	logMu sync.Mutex
+	log   *os.File // --log-requests; nil when off
+
 	// The circuit breaker: when the target keeps failing or refusing, the
 	// scan is told once, through OnFailing, so that it stops instead of
 	// reporting "nothing found" for everything that follows.
@@ -147,11 +151,31 @@ func New(o *cli.ScanOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.LogRequests != "" {
+		f, err := os.OpenFile(o.LogRequests, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("--log-requests: %w", err)
+		}
+		target := ""
+		if o.Target != nil {
+			target = o.Target.String()
+		}
+		fmt.Fprintf(f, "# cmsrecon %s, %s, started %s\n# time\tmethod\tstatus\tbytes\tms\turl\terror\n", buildinfo.Version, target, time.Now().UTC().Format(time.RFC3339))
+		c.log = f
+	}
+	resolve := o.Resolve
 	// A host that does not answer at all is known after 15 seconds; a slow
 	// page still gets the whole --timeout.
 	dialer := &net.Dialer{Timeout: min(o.Timeout, maxConnectTimeout), KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// --resolve and --vhost: connect to the given address; the
+			// Host header and TLS SNI keep the host name.
+			if host, port, err := net.SplitHostPort(addr); err == nil {
+				if ip, ok := resolve[strings.ToLower(host)]; ok {
+					addr = net.JoinHostPort(ip, port)
+				}
+			}
 			conn, err := dialer.DialContext(ctx, network, addr)
 			if err != nil {
 				return nil, err
@@ -273,6 +297,35 @@ func (c *Client) Get(ctx context.Context, rawURL string) (*Response, error) {
 	return c.Do(ctx, Request{URL: rawURL})
 }
 
+// Close closes the request log, if there is one.
+func (c *Client) Close() error {
+	c.logMu.Lock()
+	defer c.logMu.Unlock()
+	if c.log == nil {
+		return nil
+	}
+	err := c.log.Close()
+	c.log = nil
+	return err
+}
+
+// logRequest writes one line of the request log.
+func (c *Client) logRequest(start time.Time, method, u string, res *Response, err error) {
+	c.logMu.Lock()
+	defer c.logMu.Unlock()
+	if c.log == nil {
+		return
+	}
+	status, size, msg := "-", 0, ""
+	if res != nil {
+		status, size = fmt.Sprint(res.StatusCode), len(res.Body)
+	}
+	if err != nil {
+		msg = shortError(err)
+	}
+	fmt.Fprintf(c.log, "%s\t%s\t%s\t%d\t%d\t%s\t%s\n", start.UTC().Format("2006-01-02T15:04:05.000Z"), method, status, size, time.Since(start).Milliseconds(), u, msg)
+}
+
 // OnFailing sets the function called, once, when the target keeps failing
 // or refusing requests: tripAfter network errors, rate limits, overloads
 // or firewall block pages in a row.
@@ -300,7 +353,11 @@ func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 	}
 	idempotent := method == http.MethodGet || method == http.MethodHead
 	for attempt := 0; ; attempt++ {
+		start := time.Now()
 		res, err := c.doOnce(ctx, method, r)
+		if !errors.Is(err, ErrOutOfScope) {
+			c.logRequest(start, method, r.URL, res, err)
+		}
 		if errors.Is(err, ErrOutOfScope) || ctx.Err() != nil {
 			return res, err
 		}

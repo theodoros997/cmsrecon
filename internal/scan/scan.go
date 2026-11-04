@@ -119,6 +119,7 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 		Tool:          Tool{Name: "cmsrecon", Version: buildinfo.Version, UserAgent: s.client.UserAgent()},
 		Target:        Target{URL: s.opts.Target.String(), EffectiveURL: s.base.String()},
 		DetectionMode: string(s.opts.DetectionMode),
+		Options:       optionsOf(s.opts),
 		StartedAt:     start.UTC().Truncate(time.Second),
 		Notices:       append([]string(nil), notices...),
 	}
@@ -289,6 +290,7 @@ func (s *Scanner) finish(start time.Time) {
 		return findingRank(r.InterestingFindings[i].ID) < findingRank(r.InterestingFindings[j].ID)
 	})
 	sort.SliceStable(r.Errors, func(i, j int) bool { return r.Errors[i].URL < r.Errors[j].URL })
+	r.Summary = Summarize(r)
 	st := s.client.Stats()
 	r.Stats = Stats{
 		Requests:       st.Requests,

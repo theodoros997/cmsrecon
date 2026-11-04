@@ -3,6 +3,8 @@ package scan
 import (
 	"time"
 
+	"github.com/theodoros997/cmsrecon/internal/cli"
+
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
 )
 
@@ -69,10 +71,57 @@ type Result struct {
 
 	VulnerabilityData   *DataInfo  `json:"vulnerability_data"`
 	VulnerabilityCounts VulnCounts `json:"vulnerability_counts"`
+	Summary             *Summary   `json:"summary"` // the most serious findings and vulnerabilities, most severe first
+	Options             *Options   `json:"scan_options"`
 
 	Notices []string       `json:"notices"`
 	Errors  []RequestError `json:"errors"`
 	Stats   Stats          `json:"stats"`
+}
+
+// Options records how the scan was run, for a report's method section.
+// Credentials and the proxy's address are left out.
+type Options struct {
+	Enumerate        string            `json:"enumerate"`
+	DetectionMode    string            `json:"detection_mode"`
+	PluginsDetection string            `json:"plugins_detection"`
+	ThemesDetection  string            `json:"themes_detection"`
+	CrawlPages       int               `json:"crawl_pages"`
+	PluginsList      []string          `json:"plugins_list,omitempty"`
+	ThemesList       []string          `json:"themes_list,omitempty"`
+	ContentDir       string            `json:"wp_content_dir,omitempty"`
+	PluginsDir       string            `json:"wp_plugins_dir,omitempty"`
+	LoginURI         string            `json:"login_uri,omitempty"`
+	Scope            []string          `json:"scope,omitempty"`
+	Resolve          map[string]string `json:"resolve,omitempty"`
+	Threads          int               `json:"threads"`
+	Throttle         string            `json:"throttle,omitempty"`
+	Timeout          string            `json:"timeout"`
+	MaxScanDuration  string            `json:"max_scan_duration,omitempty"`
+	Proxy            bool              `json:"proxy"`
+	HTTPAuth         bool              `json:"http_auth"`
+	WPAuth           bool              `json:"wp_auth"`
+	ConfigFile       string            `json:"config_file,omitempty"`
+}
+
+func optionsOf(o *cli.ScanOptions) *Options {
+	out := &Options{
+		Enumerate: o.EnumerateSpec, DetectionMode: string(o.DetectionMode), PluginsDetection: string(o.PluginsDetection),
+		ThemesDetection: string(o.ThemesDetection), CrawlPages: o.CrawlPages, PluginsList: o.PluginsList, ThemesList: o.ThemesList,
+		ContentDir: o.ContentDir, PluginsDir: o.PluginsDir, LoginURI: o.LoginURI, Scope: o.Scope, Resolve: o.Resolve,
+		Threads: o.Threads, Timeout: o.Timeout.String(), Proxy: o.Proxy != nil, HTTPAuth: o.HTTPAuth != nil, WPAuth: o.WPAuth != nil,
+		ConfigFile: o.ConfigFile,
+	}
+	if out.Enumerate == "" {
+		out.Enumerate = cli.DefaultEnumeration
+	}
+	if o.Throttle > 0 {
+		out.Throttle = o.Throttle.String()
+	}
+	if o.MaxScanDuration > 0 {
+		out.MaxScanDuration = o.MaxScanDuration.String()
+	}
+	return out
 }
 
 // Tool identifies the scanner.
@@ -337,6 +386,13 @@ type Stats struct {
 // normalize replaces nil slices with empty ones so the JSON report always
 // has arrays where the format documents them.
 func (r *Result) normalize() {
+	if r.Summary == nil {
+		r.Summary = &Summary{}
+	}
+	if r.Options == nil {
+		r.Options = &Options{}
+	}
+	r.Summary.Risks = nonNil(r.Summary.Risks)
 	r.Target.Redirects = nonNil(r.Target.Redirects)
 	r.Target.Scope = nonNil(r.Target.Scope)
 	r.InterestingFindings = nonNil(r.InterestingFindings)

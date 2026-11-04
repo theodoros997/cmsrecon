@@ -341,7 +341,11 @@ func (s *Scanner) checkRegistration(ctx context.Context) []Finding {
 	if !s.aggressive() {
 		return nil
 	}
-	u := s.coreURL("wp-login.php") + "?action=register"
+	sep := "?"
+	if strings.Contains(s.loginURL(), "?") {
+		sep = "&"
+	}
+	u := s.loginURL() + sep + "action=register"
 	// A network redirects registration to wp-signup.php; follow a few
 	// in-scope redirects to see the form.
 	cur := u

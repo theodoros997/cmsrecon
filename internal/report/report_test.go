@@ -14,7 +14,7 @@ import (
 
 func sampleResult() *scan.Result {
 	ev := []scan.Evidence{{Method: "Meta generator", Mode: "passive", URL: "https://example.com/", Value: "6.4.2", Confidence: 60}}
-	return &scan.Result{
+	r := &scan.Result{
 		SchemaVersion: scan.SchemaVersion,
 		Tool:          scan.Tool{Name: "cmsrecon", Version: "dev", UserAgent: "cmsrecon/dev"},
 		Target: scan.Target{
@@ -104,6 +104,8 @@ func sampleResult() *scan.Result {
 		Errors:              []scan.RequestError{{URL: "https://example.com/feed/", Error: "timeout"}},
 		Stats:               scan.Stats{Requests: 42, BytesSent: 9000, BytesReceived: 1500000, ElapsedSeconds: 4.2},
 	}
+	r.Summary = scan.Summarize(r)
+	return r
 }
 
 func keys(m map[string]any) []string {
@@ -134,7 +136,7 @@ func TestJSONShape(t *testing.T) {
 		want []string
 	}{
 		{"top level", doc, []string{"core_vulnerabilities", "detection_mode", "errors", "finished_at", "interesting_findings", "js_libraries",
-			"main_theme", "media", "notices", "plugins", "schema_version", "started_at", "stats", "status", "stop", "target", "themes", "timthumbs", "tool",
+			"main_theme", "media", "notices", "plugins", "scan_options", "schema_version", "started_at", "stats", "status", "stop", "summary", "target", "themes", "timthumbs", "tool",
 			"users", "version", "vulnerability_counts", "vulnerability_data", "web_server", "wordpress"}},
 		{"timthumb", first(doc["timthumbs"]), []string{"evidence", "url", "version", "vulnerabilities"}},
 		{"media", first(doc["media"]), []string{"evidence", "id", "mime_type", "url"}},
@@ -213,6 +215,7 @@ func TestCLIReport(t *testing.T) {
 		"Exploit-DB, verified: Contact Form 7 5.3.1 - Unrestricted File Upload - https://www.exploit-db.com/exploits/49294",
 		"GitHub repository: https://github.com/someone/CVE-2020-35489", "1 more: -v lists them",
 		"1 of the confirmed and likely ones has a public exploit or proof of concept",
+		"Summary", "HIGH     Debug log exposed - https://example.com/wp-content/debug.log", "CRITICAL plugin contact-form-7 5.3.1: Contact Form 7 <= 5.3.1 - Unrestricted File Upload (confirmed, CVE-2020-35489, public exploit)",
 		"Exploits that name this plugin but no CVE: 1 Exploit-DB entry (check that they apply to 5.3.1)",
 		"Exploit-DB: WordPress Plugin Contact Form 7 5.3 - Something - https://www.exploit-db.com/exploits/50000",
 		"Timthumbs (1)", "[!] https://example.com/wp-content/themes/old/timthumb.php", "Version: 1.33 (confidence 100%)", "[CRITICAL] TimThumb < 2.0 - Remote Code Execution",
