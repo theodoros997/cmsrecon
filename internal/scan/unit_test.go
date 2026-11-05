@@ -155,7 +155,7 @@ func TestCoreAssetVersionsIgnoreBundledLibraries(t *testing.T) {
 <script src="/wp-includes/js/dist/hooks.min.js?ver=c6aec9a8d4e5a5d543a1"></script>
 <link rel="stylesheet" href="/wp-includes/css/dist/block-library/style.min.css?ver=6.4.2">
 <script src="/wp-includes/js/comment-reply.min.js?ver=6.4.2"></script>`)
-	got := s.coreAssetVersions()
+	got := s.coreAssetVersions(s.pages())
 	if len(got) != 1 || got[0].Value != "6.4.2" || got[0].Confidence != 40 {
 		t.Errorf("evidence = %+v, want 6.4.2 from two assets at 40%%", got)
 	}

@@ -163,24 +163,87 @@ func (s *Scanner) parallel(ctx context.Context, n int, fn func(i int)) {
 
 var (
 	photonHostRe = regexp.MustCompile(`(?i)^i[0-3]\.wp\.com$`)
+	// Jetpack's Site Accelerator serves core and WordPress.org plugin files.
+	jetpackHostRe   = regexp.MustCompile(`(?i)^c[0-3]\.wp\.com$`)
+	jetpackCoreRe   = regexp.MustCompile(`^/c/(\d+(?:\.\d+){1,3})/((?:wp-includes|wp-admin)/.*)$`)
+	jetpackPluginRe = regexp.MustCompile(`^/p/([a-z0-9][a-z0-9._-]*)/(\d+(?:\.\d+){0,3})/(.*)$`)
+	// CDNs that serve copies of a site's files under the site's own paths.
+	mirrorCDNRe = regexp.MustCompile(`(?i)(?:\.b-cdn\.net|\.bunnycdn\.com|\.cloudfront\.net|\.kxcdn\.com|\.stackpathcdn\.com|\.stackpathdns\.com|\.cdn77\.org|\.azureedge\.net|\.akamaized\.net|\.fastly\.net|\.wpmucdn\.com|\.rocketcdn\.me|\.nitrocdn\.com|\.quic\.cloud|\.gumlet\.io|\.r\.worldssl\.net)$`)
 	// First labels of hosts that serve a site's own files.
 	cdnLabelRe = regexp.MustCompile(`(?i)^(?:www|cdn\d*|static\d*|assets?|media|img|images|files|content|s\d*|st)$`)
 )
 
-// sitePath returns the path of an asset URL on the scanned site: an
-// in-scope URL, a CDN alias of the site such as cdn.example.com, or a
-// Jetpack image CDN URL (i0.wp.com/example.com/...). Out-of-scope URLs are
-// only read, never requested.
-func (s *Scanner) sitePath(u *url.URL) (string, bool) {
-	if s.client.InScope(u) || siteAlias(u.Hostname(), s.base.Hostname()) {
-		return u.Path, true
+// siteURL maps a URL a page references to the same file on the scanned
+// site: the URL itself when it is in scope; the same path on the site for
+// a CDN alias such as cdn.example.com, Jetpack's image CDN
+// (i0.wp.com/example.com/...) or a CDN that mirrors the site's
+// /wp-content/ and /wp-includes/ (BunnyCDN, CloudFront, KeyCDN, ...); and
+// for Jetpack's Site Accelerator, the core file or plugin file with the
+// version its URL names as ?ver= (c0.wp.com/c/6.4.2/wp-includes/... and
+// c0.wp.com/p/woocommerce/8.2.1/...). The result is read, never requested.
+func (s *Scanner) siteURL(u *url.URL) (*url.URL, bool) {
+	if s.client.InScope(u) {
+		return u, true
 	}
-	if photonHostRe.MatchString(u.Hostname()) {
+	host := u.Hostname()
+	onSite := func(p, query string) (*url.URL, bool) {
+		return &url.URL{Scheme: s.base.Scheme, Host: s.base.Host, Path: p, RawQuery: query}, true
+	}
+	switch {
+	case siteAlias(host, s.base.Hostname()):
+		return onSite(u.Path, u.RawQuery)
+	case photonHostRe.MatchString(host):
 		if rest, ok := strings.CutPrefix(u.Path, "/"+s.base.Hostname()+"/"); ok {
-			return "/" + rest, true
+			return onSite("/"+rest, u.RawQuery)
+		}
+	case jetpackHostRe.MatchString(host):
+		if m := jetpackCoreRe.FindStringSubmatch(u.Path); m != nil {
+			return onSite(s.corePath()+m[2], "ver="+m[1])
+		}
+		if m := jetpackPluginRe.FindStringSubmatch(u.Path); m != nil {
+			return onSite(s.contentPath()+"plugins/"+m[1]+"/"+m[3], "ver="+m[2])
+		}
+	case mirrorCDNRe.MatchString(host) && (strings.Contains(u.Path, "/wp-content/") || strings.Contains(u.Path, "/wp-includes/")):
+		return onSite(u.Path, u.RawQuery)
+	}
+	return nil, false
+}
+
+// sitePath is the path on the site of the file a URL points at.
+func (s *Scanner) sitePath(u *url.URL) (string, bool) {
+	su, ok := s.siteURL(u)
+	if !ok {
+		return "", false
+	}
+	return su.Path, true
+}
+
+// siteURLs returns the URLs a page references that point at the site's
+// own files, mapped to the site with siteURL.
+func (s *Scanner) siteURLs(p *page) []*url.URL {
+	var out []*url.URL
+	for _, u := range p.urls {
+		if su, ok := s.siteURL(u); ok {
+			out = append(out, su)
 		}
 	}
-	return "", false
+	return out
+}
+
+// contentPath and corePath are the paths of wp-content and of the
+// WordPress files, before pre-flight has found them too.
+func (s *Scanner) contentPath() string {
+	if s.content != nil {
+		return s.content.Path
+	}
+	return strings.TrimSuffix(s.base.Path, "/") + "/wp-content/"
+}
+
+func (s *Scanner) corePath() string {
+	if s.core != nil {
+		return s.core.Path
+	}
+	return s.base.Path
 }
 
 // siteAlias reports whether host serves the files of the site at base:
@@ -323,12 +386,14 @@ func assetVersionConfidence(assets int) int {
 //	== Changelog ==
 //	= 5.3.1 =
 var (
-	readmeNameRe      = regexp.MustCompile(`(?m)^[ \t]*===[ \t]*(.+?)[ \t]*===[ \t]*$`)
-	readmeMarkerRe    = regexp.MustCompile(`(?im)^[ \t*#]*(?:stable tag|contributors|requires at least|tested up to)[ \t*]*:|^[ \t]*===[^=\n]+===`)
-	stableTagRe       = regexp.MustCompile(`(?im)^[ \t*#>-]*stable tag[ \t*]*:[ \t*]*([^\s*]+)`)
-	changelogStartRe  = regexp.MustCompile(`(?im)^[ \t]*(?:==+|#+)[ \t]*change[ \t]?log[ \t]*(?:==+)?[ \t]*$`)
-	sectionHeadingRe  = regexp.MustCompile(`(?m)^[ \t]*(?:==[^=]|##?[^#])`)
-	changelogEntryRe  = regexp.MustCompile(`(?im)^[ \t]*(?:=+|#+|\*\*)?[ \t]*\[?(?:version[ \t]+|v)?(\d+(?:\.\d+){1,3})(?:[-.]?(?:alpha|beta|rc)[0-9.]*)?\]?(?:[ \t]|=|$|:|\(|-)`)
+	readmeNameRe     = regexp.MustCompile(`(?m)^[ \t]*===[ \t]*(.+?)[ \t]*===[ \t]*$`)
+	readmeMarkerRe   = regexp.MustCompile(`(?im)^[ \t*#]*(?:stable tag|contributors|requires at least|tested up to)[ \t*]*:|^[ \t]*===[^=\n]+===`)
+	stableTagRe      = regexp.MustCompile(`(?im)^[ \t*#>-]*stable tag[ \t*]*:[ \t*]*([^\s*]+)`)
+	changelogStartRe = regexp.MustCompile(`(?im)^[ \t]*(?:==+|#+)[ \t]*change[ \t]?log[ \t]*(?:==+)?[ \t]*$`)
+	sectionHeadingRe = regexp.MustCompile(`(?m)^[ \t]*(?:==[^=]|##?[^#])`)
+	changelogEntryRe = regexp.MustCompile(`(?im)^[ \t]*(?:=+|#+|\*\*|\*)?[ \t]*\[?(?:version[ \t]+|v)?(\d+(?:\.\d+){1,3})(?:[-.]?(?:alpha|beta|rc)[0-9.]*)?\]?(?:[ \t]|=|$|:|\(|-|\*)`)
+	// WooCommerce.com and others date their entries: "2023-11-02 - version 5.6.0".
+	changelogDatedRe  = regexp.MustCompile(`(?im)^[ \t]*(?:=+|#+|\*\*)?[ \t]*\d{4}[-./]\d{1,2}[-./]\d{1,2}[ \t]*[-–—:][ \t]*(?:version[ \t]+|v)?(\d+(?:\.\d+){1,3})\b`)
 	readmeVersionLike = regexp.MustCompile(`^\d+(?:\.\d+)+`)
 )
 
@@ -365,9 +430,11 @@ func parseReadme(body []byte) (info readmeInfo, ok bool) {
 // changelogs list the oldest release first.
 func newestVersion(text string) string {
 	best := ""
-	for _, m := range changelogEntryRe.FindAllStringSubmatch(text, -1) {
-		if best == "" || vulndb.Compare(m[1], best) > 0 {
-			best = m[1]
+	for _, re := range []*regexp.Regexp{changelogEntryRe, changelogDatedRe} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if best == "" || vulndb.Compare(m[1], best) > 0 {
+				best = m[1]
+			}
 		}
 	}
 	return best

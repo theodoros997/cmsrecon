@@ -21,7 +21,7 @@ Requires Go 1.26 or later.
 ```bash
 git clone https://github.com/theodoros997/cmsrecon.git
 cd cmsrecon
-go build -o cmsrecon ./cmd/cmsrecon
+go build -o cmsrecon ./cmd/cmsrecon        # Windows: go build -o cmsrecon.exe ./cmd/cmsrecon
 ```
 
 ## Usage
@@ -33,22 +33,30 @@ export WORDFENCE_API_KEY=...   # free, from your Wordfence account; optional
 cmsrecon update
 ```
 
+In PowerShell, set the key with `$env:WORDFENCE_API_KEY = "..."`, or put it in the [config file](#config-file).
+
 Then scan:
 
 ```bash
 cmsrecon -u https://example.com
 cmsrecon scan https://example.com -v --proxy http://127.0.0.1:8080
-cmsrecon scan https://example.com --detection-mode passive -f json -o report.json
+cmsrecon scan https://example.com --detection-mode passive -o report.json   # the format follows the extension
+cmsrecon scan https://example.com -o report.html                      # one self-contained page, printable
 cmsrecon -u https://example.com --plugins-detection mixed -e vp,vt   # also brute-force plugin folders
 cmsrecon -u https://example.com --plugins-list akismet,elementor      # also check these plugins, and no others
 cmsrecon -u https://example.com --stealthy                            # browser User-Agent, passive detection
 cmsrecon -u https://example.com --possible                            # list every possible vulnerability
-cmsrecon -u https://example.com -e vp,vt,u,tt,m                       # also TimThumb scripts and uploaded files
+cmsrecon -u https://example.com -e +tt,+m                             # the default list, plus TimThumbs and uploaded files
+cmsrecon -u https://10.0.0.5/ --vhost www.example.com                 # scan www.example.com on that server
+cmsrecon -u https://example.com --update                              # refresh the data first
 cmsrecon -u https://example.com --max-scan-duration 15m               # stop after 15 minutes, report what was found
-cmsrecon -u https://example.com --dry-run
+cmsrecon -u https://example.com --dry-run                             # the plan and about how many requests
+cmsrecon report report.json -o report.md                              # render a saved report again
 cmsrecon scan -h
 cmsrecon update -h
 ```
+
+`-e` replaces the default list (`vp,vt,cb,dbe,bf,u`); items that start with `+` add to it instead. WPScan's option names work too (`--url`, `--max-threads`, `--request-timeout`, `--disable-tls-checks`, `--rua`, `--cookie-string`, `--headers`), and `--throttle 500` and `--timeout 30` take WPScan's units (milliseconds and seconds).
 
 Without `cmsrecon update`, a scan still detects plugins, themes, libraries and versions with the lists built into cmsrecon, but matches no vulnerabilities and says so.
 
@@ -67,6 +75,34 @@ Scanning https://example.com/
 ```
 
 It only appears when stderr is a terminal; `--no-progress` turns it off.
+
+### Reports
+
+The CLI report ends with a **Summary**: the critical, high and medium findings and the confirmed and likely vulnerabilities, most severe first, so that a long report ends with what matters. When there is no vulnerability data, it says that vulnerabilities were *not checked* rather than "none found".
+
+`-f` chooses the format: `cli` (the default), `json` ([docs/json-report.md](docs/json-report.md)), `html` (one self-contained page with no script and no external file, which prints cleanly) or `md` (Markdown for a ticket or a wiki). Without `-f`, the format follows the `-o` file's extension, so `-o report.html` writes HTML. When the report goes to a file, a short summary is printed on stderr. Everything the target controls (titles, names, URLs) is escaped in the HTML and Markdown reports.
+
+`cmsrecon report scan.json -o scan.html` renders a saved JSON report again in any format, without scanning again.
+
+`--log-requests FILE` writes every request to FILE, one line each with the time, method, status, size, duration, URL and error, tab separated, for an audit trail or to see what a firewall answered.
+
+### Config file
+
+Options you always use go in a config file, one `option = value` per line with the long option names:
+
+```
+# cmsrecon defaults
+wordfence-key = 0123456789abcdef
+proxy = http://127.0.0.1:8080
+throttle = 200ms
+user-agent = Mozilla/5.0 (assessment by example.org)
+```
+
+cmsrecon reads it from `--config FILE`, else from `$CMSRECON_CONFIG`, else from `<user config dir>/cmsrecon/config`: `%AppData%\cmsrecon\config` on Windows, `~/.config/cmsrecon/config` on Linux and `~/Library/Application Support/cmsrecon/config` on macOS. The command line overrides it, and `--config none` skips it. `cmsrecon scan` and `cmsrecon update` each take the options they know from the same file; an option neither knows is an error, so a typo does not go unnoticed.
+
+### Sites behind a CDN, or not in DNS
+
+`--resolve ADDRESS` connects to ADDRESS while keeping the site's name for the Host header, TLS and the scope, like curl's `--resolve`: use it to scan the origin server behind a CDN, or a site not yet in DNS. It also takes `HOST=ADDRESS` (or curl's `HOST:PORT:ADDRESS`), comma separated, for other hosts. `--vhost NAME` is the other way round, as in WPScan: `-u https://10.0.0.5/ --vhost www.example.com` scans www.example.com on 10.0.0.5. A plugin that moved the login page is handled with `--login-uri /my-login/`.
 
 ### How plugins and themes are found
 
@@ -143,9 +179,10 @@ These are links only: cmsrecon never downloads or runs exploit code. GitHub repo
 | 3 | A pre-flight check stopped the scan: unreachable, authentication required, 403, a redirect to an out-of-scope host, not WordPress, hosted on WordPress.com, or an unfinished install. The report says why |
 | 4 | The scan reached `--max-scan-duration`; the partial report is still written |
 | 5 | The scan completed and found confirmed or likely vulnerabilities (possible ones do not count), as WPScan's exit code 5 |
+| 6 | The target kept failing or refusing requests (a rate limit, a firewall, an outage), so the scan stopped instead of reporting "nothing found"; the partial report is still written and its notices say what happened |
 | 130 | Interrupted with Ctrl-C; the partial report is still written |
 
-`cmsrecon update` exits with 0 when every requested source was updated or skipped (Wordfence without a key), 1 when a source failed (the others are still updated), 2 for an invalid command line and 130 when interrupted.
+`cmsrecon update` exits with 0 when every requested source was updated or skipped (Wordfence without a key), 1 when a source failed (the others are still updated), 2 for an invalid command line and 130 when interrupted. `cmsrecon report` exits with 0, 1 when the file is not a cmsrecon JSON report or cannot be written, and 2 for an invalid command line.
 
 ## What it checks
 
@@ -180,7 +217,7 @@ Data from each source remains subject to that provider's terms.
 
 ## Disk space and downloads
 
-The data directory holds about 10 to 25 MB once everything is downloaded; `cmsrecon update` prints the size of each source and the total. The first full update downloads about 600 MB, most of it the CVE List, and needs about 500 MB of free space while the CVE List is read: its archive is saved to the data directory, read, then deleted.
+The data directory holds about 10 to 25 MB once everything is downloaded; `cmsrecon update` prints the size of each source and the total. The first full update downloads about 600 MB, most of it the CVE List, and needs about 1 GB of free space while the CVE List is read: its archive and the archive inside it are saved to the data directory, read, then deleted (an update that was killed leaves them behind; the next one deletes them).
 
 | Source | Downloaded | Kept on disk | When |
 |---|---|---|---|
@@ -213,8 +250,10 @@ The figures marked measured come from a real update; the others are estimates, a
 - [x] TimThumb and media enumeration, `--max-scan-duration` (moved up from v1.1)
 - [x] Links to public exploits and proofs of concept
 - [x] CLI and JSON reports
+- [x] HTML and Markdown reports, `cmsrecon report` (moved up from v1.1)
+- [x] Config file, `--resolve` and `--vhost`, `--log-requests`, WPScan option names
 
-**v1.1:** plugin and theme hash fingerprinting, closed-plugin detection, SARIF and HTML reports.
+**v1.1:** plugin and theme hash fingerprinting, closed-plugin detection, SARIF reports.
 
 ## Not affiliated with WPScan
 

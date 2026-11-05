@@ -37,7 +37,15 @@ func ParseUpdate(args []string, out io.Writer) (*UpdateOptions, error) {
 	fs.StringVar(&sources, "sources", strings.Join(UpdateSources, ","), "")
 	fs.StringVar(&o.WordfenceKey, "wordfence-key", os.Getenv("WORDFENCE_API_KEY"), "")
 	fs.StringVar(&proxy, "proxy", "", "")
-	fs.DurationVar(&o.Timeout, "timeout", 60*time.Second, "")
+	timeout := durationFlag{d: 60 * time.Second, bare: time.Second}
+	fs.Var(&timeout, "timeout", "")
+	var config string
+	fs.StringVar(&config, "config", "", "")
+	cfgArgs, _, err := configArgs(args, fs)
+	if err != nil {
+		return nil, err
+	}
+	args = append(cfgArgs, args...)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprint(out, UpdateUsage)
@@ -63,12 +71,11 @@ func ParseUpdate(args []string, out io.Writer) (*UpdateOptions, error) {
 		return nil, errors.New("--sources is empty")
 	}
 	if proxy != "" {
-		var err error
 		if o.Proxy, err = parseProxy(proxy); err != nil {
 			return nil, err
 		}
 	}
-	if o.Timeout <= 0 {
+	if o.Timeout = timeout.d; o.Timeout <= 0 {
 		return nil, errors.New("--timeout must be positive")
 	}
 	o.WordfenceKey = strings.TrimSpace(o.WordfenceKey)
@@ -115,7 +122,7 @@ Options:
 Set GITHUB_TOKEN to raise GitHub's API rate limit for the CVE List.
 
 The data directory holds about 10 to 25 MB; the update prints the size of
-each source and the total. The CVE List needs about 500 MB of free space
+each source and the total. The CVE List needs about 1 GB of free space
 while it is read. With a Wordfence key, leaving it out of --sources saves
 most of the download.
 

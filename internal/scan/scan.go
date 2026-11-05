@@ -42,6 +42,7 @@ type Scanner struct {
 	home     *page
 	notFound *page    // the answer to a random path: the site's 404 page
 	content  *url.URL // the wp-content directory on the target host
+	core     *url.URL // where WordPress's own files are: the site root, or /wp/ for Bedrock
 	plugins  *url.URL // the plugins directory: <content>/plugins/ or --wp-plugins-dir
 	themes   *url.URL // the themes directory: <content>/themes/
 	server   string   // web server family
@@ -52,14 +53,17 @@ type Scanner struct {
 	baseMu    sync.Mutex
 	baselines map[string]*baseline
 
-	headRefused atomic.Bool // the server answers HEAD with 405 or 501
+	headRefused  atomic.Bool  // the server answers HEAD with 405 or 501
+	probeBlocked atomic.Int64 // brute-force answers that were a rate limit or a block page
 
-	restOnce  sync.Once
-	restAPI   *restAPI
-	crawlOnce sync.Once
-	crawled   *crawlResult
-	invOnce   sync.Once
-	inv       *inventory
+	restOnce     sync.Once
+	restAPI      *restAPI
+	crawlOnce    sync.Once
+	crawled      *crawlResult
+	combinedOnce sync.Once
+	combined     []combinedFile
+	invOnce      sync.Once
+	inv          *inventory
 
 	mu  sync.Mutex // guards res
 	res *Result
@@ -87,6 +91,13 @@ func New(opts *cli.ScanOptions, client *httpclient.Client) *Scanner {
 // errMaxDuration is the cause of a scan stopped by --max-scan-duration.
 var errMaxDuration = errors.New("the scan reached --max-scan-duration")
 
+// errTargetFailing is the cause of a scan stopped by the client's circuit
+// breaker: the target kept failing or refusing requests.
+var errTargetFailing = errors.New("the target kept failing or refusing requests")
+
+// maxErrors caps how many failed requests the result lists.
+const maxErrors = 100
+
 // Run scans the target and always returns a result. Notices are copied into
 // the result as they are. When ctx is cancelled, Run returns what it found so
 // far with StatusInterrupted, or StatusTimedOut when --max-scan-duration
@@ -98,11 +109,17 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 		ctx, cancel = context.WithTimeoutCause(ctx, d, errMaxDuration)
 		defer cancel()
 	}
+	// When the target keeps failing or refusing, everything after that
+	// point would read "nothing found": stop instead, and say why.
+	ctx, stopFailing := context.WithCancelCause(ctx)
+	defer stopFailing(nil)
+	s.client.OnFailing(func(string) { stopFailing(errTargetFailing) })
 	s.res = &Result{
 		SchemaVersion: SchemaVersion,
 		Tool:          Tool{Name: "cmsrecon", Version: buildinfo.Version, UserAgent: s.client.UserAgent()},
 		Target:        Target{URL: s.opts.Target.String(), EffectiveURL: s.base.String()},
 		DetectionMode: string(s.opts.DetectionMode),
+		Options:       optionsOf(s.opts),
 		StartedAt:     start.UTC().Truncate(time.Second),
 		Notices:       append([]string(nil), notices...),
 	}
@@ -129,9 +146,13 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 	}
 	if ctx.Err() != nil {
 		s.res.Status = StatusInterrupted
-		if errors.Is(context.Cause(ctx), errMaxDuration) {
+		switch cause := context.Cause(ctx); {
+		case errors.Is(cause, errMaxDuration):
 			s.res.Status = StatusTimedOut
 			s.res.Notices = append(s.res.Notices, fmt.Sprintf("The scan stopped after --max-scan-duration %s: the checks still running were cut short, so the results are partial.", s.opts.MaxScanDuration))
+		case errors.Is(cause, errTargetFailing):
+			s.res.Status = StatusBlocked
+			s.res.Notices = append(s.res.Notices, fmt.Sprintf("The scan stopped after %d requests because the target kept failing or refusing them (%s). What was not checked by then is missing, not absent. Scan again later, more slowly (--throttle 1s --threads 1), or from an allowed IP.", s.client.Stats().Requests, s.client.Failing()))
 		}
 		if s.res.Stop != nil && s.res.Stop.Code == StopConnectionFailed {
 			s.res.Stop = nil // the request failed because of the interruption
@@ -164,7 +185,7 @@ func (s *Scanner) runChecks(ctx context.Context) {
 			if n := int(checked.Add(1)); n < len(checks) {
 				st.Update(stepFindings, fmt.Sprintf("%d/%d checks", n, len(checks)))
 			} else {
-				st.Done(stepFindings, s.findingsSummary())
+				s.endStep(ctx, stepFindings, s.findingsSummary())
 			}
 		})
 	}
@@ -174,7 +195,7 @@ func (s *Scanner) runChecks(ctx context.Context) {
 		st.Start(stepVersion)
 		v := s.detectVersion(ctx)
 		latest(v, s.data.lists.CoreLatest)
-		st.Done(stepVersion, versionSummary(v))
+		s.endStep(ctx, stepVersion, versionSummary(v))
 		var main *Theme
 		var others []*Theme
 		var plugins []*Plugin
@@ -191,20 +212,20 @@ func (s *Scanner) runChecks(ctx context.Context) {
 				latest(t.Version, s.data.lists.Latest(wordlists.Themes, t.Slug))
 			}
 			if s.passive() {
-				st.Done(stepMainTheme, mainThemeSummary(main))
+				s.endStep(ctx, stepMainTheme, mainThemeSummary(main))
 			}
 		}
 		var inner sync.WaitGroup
 		inner.Go(func() {
 			st.Start(stepPlugins)
 			plugins = s.detectPlugins(ctx, v)
-			st.Done(stepPlugins, countSummary(len(plugins), "found", "none found"))
+			s.endStep(ctx, stepPlugins, countSummary(len(plugins), "found", "none found"))
 		})
 		if inv == nil || len(inv.themes) == 0 {
 			inner.Go(func() {
 				st.Start(stepThemes)
 				others = s.enumerateThemes(ctx, v, main)
-				st.Done(stepThemes, countSummary(len(others), "other themes found", "no other theme found"))
+				s.endStep(ctx, stepThemes, countSummary(len(others), "other themes found", "no other theme found"))
 			})
 		}
 		inner.Wait()
@@ -219,7 +240,7 @@ func (s *Scanner) runChecks(ctx context.Context) {
 			s.mu.Lock()
 			s.res.Users = users
 			s.mu.Unlock()
-			st.Done(stepUsers, countSummary(len(users), "found", "none found"))
+			s.endStep(ctx, stepUsers, countSummary(len(users), "found", "none found"))
 		})
 	}
 	wg.Go(func() {
@@ -228,7 +249,7 @@ func (s *Scanner) runChecks(ctx context.Context) {
 		s.mu.Lock()
 		s.res.JSLibraries = libs
 		s.mu.Unlock()
-		st.Done(stepJS, countSummary(len(libs), "found", "none found"))
+		s.endStep(ctx, stepJS, countSummary(len(libs), "found", "none found"))
 	})
 	if s.opts.Enumerate.Media != nil && s.aggressive() {
 		wg.Go(func() {
@@ -237,7 +258,7 @@ func (s *Scanner) runChecks(ctx context.Context) {
 			s.mu.Lock()
 			s.res.Media = media
 			s.mu.Unlock()
-			st.Done(stepMedia, countSummary(len(media), "files found", "no file found"))
+			s.endStep(ctx, stepMedia, countSummary(len(media), "files found", "no file found"))
 		})
 	}
 	wg.Wait()
@@ -245,18 +266,18 @@ func (s *Scanner) runChecks(ctx context.Context) {
 	if s.aggressive() {
 		st.Start(stepFolders)
 		n := s.checkItems(ctx)
-		st.Done(stepFolders, countSummary(n, "warnings", "nothing exposed"))
+		s.endStep(ctx, stepFolders, countSummary(n, "warnings", "nothing exposed"))
 	} else {
 		s.checkItems(ctx)
 	}
 	if s.opts.Enumerate.Timthumbs && s.aggressive() {
 		st.Start(stepTimthumbs)
 		s.res.Timthumbs = s.enumerateTimthumbs(ctx)
-		st.Done(stepTimthumbs, countSummary(len(s.res.Timthumbs), "found", "none found"))
+		s.endStep(ctx, stepTimthumbs, countSummary(len(s.res.Timthumbs), "found", "none found"))
 	}
 	st.Start(stepVulns)
 	s.matchVulnerabilities()
-	st.Done(stepVulns, s.vulnSummary())
+	st.Done(stepVulns, s.vulnSummary()) // matching needs no request: it always finishes
 }
 
 func (s *Scanner) finish(start time.Time) {
@@ -269,12 +290,23 @@ func (s *Scanner) finish(start time.Time) {
 		return findingRank(r.InterestingFindings[i].ID) < findingRank(r.InterestingFindings[j].ID)
 	})
 	sort.SliceStable(r.Errors, func(i, j int) bool { return r.Errors[i].URL < r.Errors[j].URL })
+	r.Summary = Summarize(r)
 	st := s.client.Stats()
 	r.Stats = Stats{
 		Requests:       st.Requests,
 		BytesSent:      st.BytesSent,
 		BytesReceived:  st.BytesReceived,
 		ElapsedSeconds: math.Round(time.Since(start).Seconds()*1000) / 1000,
+		Retries:        st.Retries,
+		Blocked:        st.Blocked,
+		FailedRequests: r.Stats.FailedRequests,
+	}
+	if st.Blocked > 0 && r.Status != StatusBlocked {
+		of := ""
+		if n := s.probeBlocked.Load(); n > 0 {
+			of = fmt.Sprintf(" (%d of them for plugin or theme checks, which stay unknown)", n)
+		}
+		r.Notices = append(r.Notices, fmt.Sprintf("%d answers were a rate limit, an overload or a firewall block page instead of the site%s: they were not counted as found or as absent. If that is many, scan more slowly (--throttle 1s --threads 1).", st.Blocked, of))
 	}
 	r.normalize()
 }
@@ -294,6 +326,15 @@ func (s *Scanner) get(ctx context.Context, u string) *httpclient.Response {
 		f.resp, f.err = s.client.Get(ctx, u)
 		s.recordError(ctx, u, f.err)
 		close(f.done)
+		// A failure or a refusal is not the page: forget it, so that a
+		// later check asks again.
+		if f.err != nil || (f.resp != nil && f.resp.SiteBlocked) {
+			s.cacheMu.Lock()
+			if s.cache[u] == f {
+				delete(s.cache, u)
+			}
+			s.cacheMu.Unlock()
+		}
 	} else {
 		s.cacheMu.Unlock()
 		select {
@@ -318,7 +359,10 @@ func (s *Scanner) recordError(ctx context.Context, u string, err error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.res.Errors = append(s.res.Errors, RequestError{URL: u, Error: err.Error()})
+	s.res.Stats.FailedRequests++
+	if len(s.res.Errors) < maxErrors {
+		s.res.Errors = append(s.res.Errors, RequestError{URL: u, Error: err.Error()})
+	}
 }
 
 // url resolves ref against the scanned URL, e.g. "readme.html".

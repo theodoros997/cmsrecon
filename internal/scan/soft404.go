@@ -22,11 +22,17 @@ const similarThreshold = 0.9
 // WAFs and "403 for everything" setups answer every path the same way, so a
 // response that matches the baseline of its directory says nothing.
 type baseline struct {
-	once   sync.Once
-	name   string // the random file or directory name requested
-	resp   *httpclient.Response
-	tokens bag
+	mu       sync.Mutex
+	tries    int    // GET attempts so far; a failed one is tried again, up to maxBaselineTries
+	name     string // the random file or directory name requested
+	resp     *httpclient.Response
+	tokens   bag
+	headDone bool
+	head     int // status of a HEAD for the random path; 0 when unknown
 }
+
+// maxBaselineTries caps the attempts at a baseline that keeps failing.
+const maxBaselineTries = 3
 
 // baselineFor returns the response to a random path next to u: in the same
 // directory, with the same extension, or a directory when u is one. It is
@@ -43,18 +49,40 @@ func (s *Scanner) baselineFor(ctx context.Context, u *url.URL) *baseline {
 	}
 	s.baseMu.Unlock()
 
-	b.once.Do(func() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// A failed or refused baseline is asked for again: caching it would
+	// leave every later probe in the directory without a comparison.
+	if b.resp == nil && b.tries < maxBaselineTries && ctx.Err() == nil {
+		b.tries++
 		b.name = randomName() + suffix
 		ref := &url.URL{Scheme: u.Scheme, Host: u.Host, Path: dir + b.name}
-		b.resp = s.do(ctx, httpclient.Request{URL: ref.String()})
-		if b.resp != nil {
-			b.tokens = tokenize(b.resp.Body, strings.TrimSuffix(b.name, "/"))
+		res := s.do(ctx, httpclient.Request{URL: ref.String()})
+		if res != nil && res.Blocked == "" {
+			b.resp = res
+			b.tokens = tokenize(res.Body, strings.TrimSuffix(b.name, "/"))
 		}
-	})
+	}
 	if b.resp == nil {
 		return nil
 	}
 	return b
+}
+
+// headStatus is the status a HEAD for the baseline's random path gets,
+// fetched once; 0 when unknown. HEAD probes are compared with it, not with
+// the GET: some firewalls answer HEAD differently.
+func (s *Scanner) headStatus(ctx context.Context, u *url.URL, b *baseline) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.headDone && ctx.Err() == nil {
+		dir, _ := baselineKey(u.Path)
+		ref := &url.URL{Scheme: u.Scheme, Host: u.Host, Path: dir + b.name}
+		if res := s.do(ctx, httpclient.Request{Method: "HEAD", URL: ref.String()}); res != nil && res.Blocked == "" {
+			b.head, b.headDone = res.StatusCode, true
+		}
+	}
+	return b.head
 }
 
 // baselineKey splits a path into its directory and the suffix a random
@@ -78,7 +106,9 @@ func baselineKey(p string) (dir, suffix string) {
 // 404 or 410, or a soft-404, i.e. the homepage or the same answer a random
 // path in the same directory gets.
 func (s *Scanner) isNotFound(ctx context.Context, u *url.URL, res *httpclient.Response) bool {
-	if res == nil || res.StatusCode == 404 || res.StatusCode == 410 {
+	// A rate limit or a block page says nothing about the path: count it
+	// as not found rather than as found.
+	if res == nil || res.StatusCode == 404 || res.StatusCode == 410 || res.Blocked != "" {
 		return true
 	}
 	name := path.Base(strings.TrimSuffix(u.Path, "/"))

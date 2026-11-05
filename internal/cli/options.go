@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,8 +30,10 @@ const (
 type Format string
 
 const (
-	FormatCLI  Format = "cli"
-	FormatJSON Format = "json"
+	FormatCLI      Format = "cli"
+	FormatJSON     Format = "json"
+	FormatHTML     Format = "html"
+	FormatMarkdown Format = "md"
 )
 
 // Credentials is a login:password pair.
@@ -55,6 +58,8 @@ type ScanOptions struct {
 	ThemesList       []string // --themes-list
 	ContentDir       string   // --wp-content-dir, when detection gets it wrong
 	PluginsDir       string   // --wp-plugins-dir
+	LoginURI         string   // --login-uri: the login page, when a plugin moved it
+	EnumerateSpec    string   // -e as given, for the report
 	Force            bool
 	FollowRedirect   bool
 	Scope            []string
@@ -70,7 +75,9 @@ type ScanOptions struct {
 	Throttle        time.Duration
 	Timeout         time.Duration
 	Insecure        bool
-	MaxScanDuration time.Duration // stop the scan after this long; 0 for no limit
+	MaxScanDuration time.Duration     // stop the scan after this long; 0 for no limit
+	Resolve         map[string]string // host -> address to connect to (--resolve, --vhost)
+	LogRequests     string            // --log-requests: a file that logs every request
 
 	Format       Format
 	Output       string
@@ -79,8 +86,10 @@ type ScanOptions struct {
 	Verbose      bool
 	ShowPossible bool // list the possible vulnerabilities instead of counting them
 	DryRun       bool
+	Update       bool // run "cmsrecon update" before the scan
 
-	DataDir string
+	DataDir    string
+	ConfigFile string // the config file whose defaults were applied; empty when none
 }
 
 // ParseScan parses the arguments of the scan command. Flags and the target URL
@@ -89,9 +98,11 @@ type ScanOptions struct {
 func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	o := &ScanOptions{}
 	var target, enumerate, mode, pluginsMode, themesMode, format, scope, proxy, httpAuth, wpAuth string
-	var pluginsList, themesList, maxDuration string
-	var stealthy bool
+	var pluginsList, themesList, maxDuration, resolve, vhost, apiToken string
+	var stealthy, noBanner bool
 	headers := headerFlag{}
+	timeout := durationFlag{d: 60 * time.Second, bare: time.Second}
+	throttle := durationFlag{bare: time.Millisecond} // WPScan's --throttle is in milliseconds
 
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -114,24 +125,38 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.StringVar(&themesList, "themes-list", "", "")
 	fs.StringVar(&o.ContentDir, "wp-content-dir", "", "")
 	fs.StringVar(&o.PluginsDir, "wp-plugins-dir", "", "")
+	fs.StringVar(&o.LoginURI, "login-uri", "", "")
 	fs.BoolVar(&stealthy, "stealthy", false, "")
 
 	fs.StringVar(&o.UserAgent, "user-agent", "", "")
 	fs.BoolVar(&o.RandomUserAgent, "random-user-agent", false, "")
 	fs.Var(headers, "H", "")
 	fs.Var(headers, "header", "")
+	fs.Var(wpscanHeaders{headers}, "headers", "") // WPScan: "A: 1; B: 2"
 	fs.StringVar(&o.Cookie, "cookie", "", "")
+	fs.StringVar(&o.Cookie, "cookie-string", "", "") // WPScan's name
 	fs.StringVar(&httpAuth, "http-auth", "", "")
 	fs.StringVar(&proxy, "proxy", "", "")
 	fs.IntVar(&o.Threads, "t", 5, "")
 	fs.IntVar(&o.Threads, "threads", 5, "")
-	fs.DurationVar(&o.Throttle, "throttle", 0, "")
-	fs.DurationVar(&o.Timeout, "timeout", 60*time.Second, "")
+	fs.IntVar(&o.Threads, "max-threads", 5, "") // WPScan's name
+	fs.Var(&throttle, "throttle", "")
+	fs.Var(&timeout, "timeout", "")
+	fs.Var(&timeout, "request-timeout", "") // WPScan's name
 	fs.BoolVar(&o.Insecure, "insecure", false, "")
+	fs.BoolVar(&o.Insecure, "disable-tls-checks", false, "") // WPScan's name
+	fs.BoolVar(&o.RandomUserAgent, "rua", false, "")         // WPScan's name
 	fs.StringVar(&maxDuration, "max-scan-duration", "", "")
+	fs.StringVar(&resolve, "resolve", "", "")
+	fs.StringVar(&vhost, "vhost", "", "")
+	fs.StringVar(&o.LogRequests, "log-requests", "", "")
+	fs.StringVar(&apiToken, "api-token", "", "")
+	fs.BoolVar(&noBanner, "no-banner", false, "")
+	fs.BoolVar(&o.Update, "update", false, "")
+	fs.StringVar(&o.ConfigFile, "config", "", "")
 
-	fs.StringVar(&format, "f", string(FormatCLI), "")
-	fs.StringVar(&format, "format", string(FormatCLI), "")
+	fs.StringVar(&format, "f", "", "")
+	fs.StringVar(&format, "format", "", "")
 	fs.StringVar(&o.Output, "o", "", "")
 	fs.StringVar(&o.Output, "output", "", "")
 	fs.BoolVar(&o.NoColor, "no-color", false, "")
@@ -143,6 +168,13 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 
 	fs.StringVar(&o.DataDir, "data-dir", "", "")
 
+	// Defaults from the config file come first, so the command line wins.
+	cfgArgs, cfgFile, err := configArgs(args, fs)
+	if err != nil {
+		return nil, err
+	}
+	args = append(cfgArgs, args...)
+
 	// The flag package stops at the first non-flag argument, so keep parsing
 	// after each positional one to allow "scan example.com -e vp".
 	var positional []string
@@ -151,7 +183,7 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 			if errors.Is(err, flag.ErrHelp) {
 				fmt.Fprint(out, ScanUsage)
 			}
-			return nil, err
+			return nil, flagHint(err)
 		}
 		args = fs.Args()
 		if len(args) == 0 {
@@ -166,11 +198,24 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	if len(positional) > 0 {
 		return nil, fmt.Errorf("unexpected arguments: %s", strings.Join(positional, " "))
 	}
+	o.ConfigFile = cfgFile
+	if apiToken != "" {
+		return nil, errors.New("--api-token: cmsrecon needs no API token; its vulnerability data comes from \"cmsrecon update\" (set WORDFENCE_API_KEY for the best data)")
+	}
+	if strings.HasPrefix(strings.TrimSpace(target), "-") {
+		return nil, fmt.Errorf("the target %q looks like an option: give the site's URL after -u", target)
+	}
 
-	var err error
 	if o.Target, err = normalizeTarget(target); err != nil {
 		return nil, err
 	}
+	if o.Resolve, err = parseResolve(resolve, vhost, o.Target); err != nil {
+		return nil, err
+	}
+	if len(o.Resolve) > 0 && proxy != "" {
+		return nil, errors.New("--resolve and --vhost choose the address to connect to, which a --proxy decides instead: use one or the other")
+	}
+	o.EnumerateSpec = enumerate
 	if o.Enumerate, err = ParseEnumeration(enumerate); err != nil {
 		return nil, err
 	}
@@ -201,9 +246,16 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 		o.RandomUserAgent = true
 		o.DetectionMode = ModePassive
 	}
+	if format == "" {
+		format = formatFor(o.Output)
+	}
+	if f := strings.ToLower(format); f == "cli-no-color" || f == "cli-no-colour" { // WPScan's names
+		format, o.NoColor = string(FormatCLI), true
+	}
 	if o.Format, err = parseFormat(format); err != nil {
 		return nil, err
 	}
+	o.Timeout, o.Throttle = timeout.d, throttle.d
 	for _, d := range strings.Split(scope, ",") {
 		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
 			o.Scope = append(o.Scope, d)
@@ -287,6 +339,9 @@ func parseSlugList(flagName, v string) ([]string, error) {
 	items := strings.Split(v, ",")
 	if data, err := os.ReadFile(v); err == nil {
 		items = strings.Split(string(data), "\n")
+	} else if ext := strings.ToLower(filepath.Ext(v)); !strings.Contains(v, ",") && (strings.ContainsAny(v, `/\`) || ext == ".txt" || ext == ".lst" || ext == ".list" || ext == ".csv") {
+		// "plugins.txt" or "lists/x": a file that is not there, not a slug.
+		return nil, fmt.Errorf("--%s: %w", flagName, err)
 	}
 	var out []string
 	seen := map[string]bool{}
@@ -354,10 +409,143 @@ func (m DetectionMode) Discover() bool { return m != ModeAggressive }
 
 func parseFormat(s string) (Format, error) {
 	switch f := Format(strings.ToLower(s)); f {
-	case FormatCLI, FormatJSON:
+	case FormatCLI, FormatJSON, FormatHTML, FormatMarkdown:
 		return f, nil
+	case "markdown":
+		return FormatMarkdown, nil
+	case "htm":
+		return FormatHTML, nil
 	}
-	return "", fmt.Errorf("invalid --format %q (use cli or json)", s)
+	return "", fmt.Errorf("invalid --format %q (use cli, json, html or md)", s)
+}
+
+// formatFor is the format a report file's extension asks for: -o
+// report.json writes JSON without -f json.
+func formatFor(output string) string {
+	switch strings.ToLower(filepath.Ext(output)) {
+	case ".json":
+		return string(FormatJSON)
+	case ".html", ".htm":
+		return string(FormatHTML)
+	case ".md", ".markdown":
+		return string(FormatMarkdown)
+	}
+	return string(FormatCLI)
+}
+
+// durationFlag is a duration that also takes a bare number, in the unit
+// WPScan uses for the same option: seconds for --timeout, milliseconds
+// for --throttle.
+type durationFlag struct {
+	d    time.Duration
+	bare time.Duration
+}
+
+func (f *durationFlag) String() string { return f.d.String() }
+
+func (f *durationFlag) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if n, err := strconv.ParseFloat(v, 64); err == nil {
+		f.d = time.Duration(n * float64(f.bare))
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("%q is not a duration (e.g. 30s, 500ms, or a number of %s)", v, map[time.Duration]string{time.Second: "seconds", time.Millisecond: "milliseconds"}[f.bare])
+	}
+	f.d = d
+	return nil
+}
+
+// wpscanHeaders reads WPScan's --headers "A: 1; B: 2".
+type wpscanHeaders struct{ h headerFlag }
+
+func (w wpscanHeaders) String() string { return "" }
+
+func (w wpscanHeaders) Set(v string) error {
+	for _, part := range strings.Split(v, ";") {
+		if part = strings.TrimSpace(part); part != "" {
+			if err := w.h.Set(part); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// wpscanOnly maps WPScan options cmsrecon does not have to what to use.
+var wpscanOnly = map[string]string{
+	"enterprise-db-token":   "cmsrecon needs no token: \"cmsrecon update\" downloads its vulnerability data",
+	"passwords":             "cmsrecon never guesses passwords",
+	"usernames":             "cmsrecon never guesses passwords",
+	"password-attack":       "cmsrecon never guesses passwords",
+	"cache-dir":             "use --data-dir",
+	"clear-cache":           "cmsrecon keeps no response cache",
+	"cookie-jar":            "cookies the site sets are kept for the scan; use --cookie to send your own",
+	"wp-version-all":        "the version checks always run; -v shows every signal",
+	"plugins-threshold":     "brute force is off by default; choose its list with -e",
+	"themes-threshold":      "brute force is off by default; choose its list with -e",
+	"exclude-content-based": "soft-404 pages are recognized automatically",
+}
+
+// flagHint rewords the flag package's errors for options WPScan users
+// try.
+func flagHint(err error) error {
+	msg := err.Error()
+	if name, ok := strings.CutPrefix(msg, "flag provided but not defined: -"); ok {
+		name = strings.TrimLeft(name, "-")
+		if hint, ok := wpscanOnly[name]; ok {
+			return fmt.Errorf("unknown option --%s: %s", name, hint)
+		}
+		return fmt.Errorf("unknown option --%s (run \"cmsrecon scan -h\" for the options)", name)
+	}
+	return err
+}
+
+// parseResolve reads --resolve and --vhost into the addresses to connect
+// to. --resolve takes "ADDRESS" (for the target's host), "HOST=ADDRESS" or
+// curl's "HOST:PORT:ADDRESS", comma separated. --vhost NAME with -u
+// https://ADDRESS/ scans NAME while connecting to ADDRESS, as WPScan's
+// --vhost does: the target becomes NAME, so Host, TLS SNI and the scope
+// are NAME's.
+func parseResolve(resolve, vhost string, target *url.URL) (map[string]string, error) {
+	out := map[string]string{}
+	if vhost = strings.ToLower(strings.TrimSpace(vhost)); vhost != "" {
+		if strings.ContainsAny(vhost, "/:@ ") {
+			return nil, fmt.Errorf("--vhost %q must be a host name, such as www.example.com", vhost)
+		}
+		out[vhost] = target.Hostname()
+		port := target.Port()
+		target.Host = vhost
+		if port != "" {
+			target.Host = net.JoinHostPort(vhost, port)
+		}
+	}
+	for _, entry := range strings.Split(resolve, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		host, addr := strings.ToLower(target.Hostname()), entry
+		switch {
+		case net.ParseIP(strings.Trim(entry, "[]")) != nil:
+			// A bare address, IPv6 ones included: for the target's host.
+		case strings.Contains(entry, "="):
+			host, addr, _ = strings.Cut(entry, "=")
+		case strings.Count(entry, ":") == 2:
+			parts := strings.SplitN(entry, ":", 3)
+			host, addr = parts[0], parts[2]
+		}
+		host, addr = strings.ToLower(strings.TrimSpace(host)), strings.Trim(strings.TrimSpace(addr), "[]")
+		if net.ParseIP(addr) == nil {
+			return nil, fmt.Errorf("--resolve %q: %q is not an IP address", entry, addr)
+		}
+		out[host] = addr
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func parseCredentials(flagName, s string) (*Credentials, error) {
@@ -419,7 +607,9 @@ Target:
                               list from the REST API instead of detecting it
 
 Detection:
-  -e, --enumerate LIST        What to enumerate (default "vp,vt,cb,dbe,bf,u"; "none" for nothing)
+  -e, --enumerate LIST        What to enumerate (default "vp,vt,cb,dbe,bf,u"; "none" for nothing).
+                              Items starting with + add to the default list instead of
+                              replacing it: -e +tt,+m adds TimThumbs and media
                                 vp | p | ap   vulnerable | popular | all plugins
                                 vt | t | at   vulnerable | popular | all themes
                                 cb            wp-config.php backups
@@ -446,6 +636,7 @@ Detection:
       --wp-content-dir DIR    The content directory, when detection gets it wrong
                               (e.g. app/ or https://cdn.example.com/content/)
       --wp-plugins-dir DIR    The plugins directory (default: <content dir>/plugins/)
+      --login-uri PATH        The login page, when a plugin moved it (e.g. /my-login/)
       --stealthy              A browser User-Agent and passive detection: only the pages a
                               visitor's browser would load (as WPScan's --stealthy)
 
@@ -460,12 +651,19 @@ HTTP:
       --throttle DURATION     Wait between requests, e.g. 500ms (forces --threads 1)
       --timeout DURATION      Per-request timeout (default 60s)
       --insecure              Skip TLS certificate verification
+      --resolve ADDRESS       Connect to ADDRESS instead of the address DNS gives, e.g. a
+                              server behind a CDN or not yet in DNS; also HOST=ADDRESS
+                              or curl's HOST:PORT:ADDRESS, comma separated
+      --vhost NAME            Scan the site NAME at the -u address: -u https://10.0.0.5/
+                              --vhost www.example.com (Host, TLS name and scope are NAME's)
       --max-scan-duration D   Stop the scan after D (e.g. 10m, or 600 seconds) and report
                               what was found so far
 
 Output:
-  -f, --format FORMAT         cli or json (default cli)
-  -o, --output FILE           Write results to FILE instead of stdout
+  -f, --format FORMAT         cli, json, html or md (default: from the -o file's extension,
+                              else cli)
+  -o, --output FILE           Write the report to FILE instead of stdout; a short summary
+                              is printed on stderr
       --no-color              Disable colored output
       --no-progress           Do not show what the scan is doing while it runs (shown on
                               stderr when it is a terminal)
@@ -473,10 +671,22 @@ Output:
       --possible              List the possible vulnerabilities (those of components whose
                               version is unknown) instead of only counting them
       --dry-run               Print the scan plan and exit without sending any request
+      --log-requests FILE     Log every request (time, method, URL, status, size, duration)
+                              to FILE, tab separated
 
 Data:
       --data-dir DIR          Where "cmsrecon update" stored the vulnerability data
                               (default: <user cache dir>/cmsrecon)
+      --update                Run "cmsrecon update" before the scan
+
+Config file:
+      --config FILE           Defaults for any option, one "option = value" per line
+                              (default: $CMSRECON_CONFIG, else <user config dir>/cmsrecon/config;
+                              "none" for no file). The command line overrides it
+
+WPScan names work too: --url, --max-threads, --request-timeout, --disable-tls-checks,
+--rua, --cookie-string, --headers and --no-banner. --api-token is not needed:
+"cmsrecon update" downloads the vulnerability data.
 
 Exit codes:
   0    The scan completed
@@ -487,5 +697,7 @@ Exit codes:
        install); the report says why
   4    The scan reached --max-scan-duration; the partial report is still written
   5    The scan completed and found confirmed or likely vulnerabilities
+  6    The target kept failing or refusing requests (rate limit, firewall,
+       outage), so the scan stopped; the partial report is still written
   130  Interrupted with Ctrl-C; the partial report is still written
 `

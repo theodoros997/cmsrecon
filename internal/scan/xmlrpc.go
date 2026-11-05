@@ -84,7 +84,7 @@ func (s *Scanner) checkXMLRPC(ctx context.Context) []Finding {
 		break
 	}
 	if f.URL == "" {
-		f.URL = s.url("xmlrpc.php")
+		f.URL = s.coreURL("xmlrpc.php")
 	}
 
 	if s.aggressive() {

@@ -3,6 +3,8 @@ package scan
 import (
 	"time"
 
+	"github.com/theodoros997/cmsrecon/internal/cli"
+
 	"github.com/theodoros997/cmsrecon/internal/vulndb"
 )
 
@@ -17,6 +19,7 @@ const (
 	StatusStopped     = "stopped"     // a pre-flight check stopped the scan; see Result.Stop
 	StatusInterrupted = "interrupted" // the user interrupted the scan; results are partial
 	StatusTimedOut    = "timed_out"   // the scan reached --max-scan-duration; results are partial
+	StatusBlocked     = "blocked"     // the target kept failing or refusing requests, so the scan stopped; results are partial
 )
 
 // Stop codes explain why a pre-flight check stopped the scan.
@@ -29,6 +32,7 @@ const (
 	StopNotWordPress      = "not_wordpress"
 	StopWordPressCom      = "wordpress_com"
 	StopUnfinishedInstall = "unfinished_install"
+	StopBlocked           = "blocked" // the homepage was a rate limit, an overload or a firewall challenge
 )
 
 // Severities of interesting findings, lowest first.
@@ -56,6 +60,7 @@ type Result struct {
 	InterestingFindings []Finding       `json:"interesting_findings"`
 	Version             *Version        `json:"version"`
 	CoreVulnerabilities []Vulnerability `json:"core_vulnerabilities"`
+	CorePossible        *PossibleVulns  `json:"core_possible_vulnerabilities,omitempty"`
 	MainTheme           *Theme          `json:"main_theme"`
 	Themes              []*Theme        `json:"themes"`
 	Plugins             []*Plugin       `json:"plugins"`
@@ -66,10 +71,57 @@ type Result struct {
 
 	VulnerabilityData   *DataInfo  `json:"vulnerability_data"`
 	VulnerabilityCounts VulnCounts `json:"vulnerability_counts"`
+	Summary             *Summary   `json:"summary"` // the most serious findings and vulnerabilities, most severe first
+	Options             *Options   `json:"scan_options"`
 
 	Notices []string       `json:"notices"`
 	Errors  []RequestError `json:"errors"`
 	Stats   Stats          `json:"stats"`
+}
+
+// Options records how the scan was run, for a report's method section.
+// Credentials and the proxy's address are left out.
+type Options struct {
+	Enumerate        string            `json:"enumerate"`
+	DetectionMode    string            `json:"detection_mode"`
+	PluginsDetection string            `json:"plugins_detection"`
+	ThemesDetection  string            `json:"themes_detection"`
+	CrawlPages       int               `json:"crawl_pages"`
+	PluginsList      []string          `json:"plugins_list,omitempty"`
+	ThemesList       []string          `json:"themes_list,omitempty"`
+	ContentDir       string            `json:"wp_content_dir,omitempty"`
+	PluginsDir       string            `json:"wp_plugins_dir,omitempty"`
+	LoginURI         string            `json:"login_uri,omitempty"`
+	Scope            []string          `json:"scope,omitempty"`
+	Resolve          map[string]string `json:"resolve,omitempty"`
+	Threads          int               `json:"threads"`
+	Throttle         string            `json:"throttle,omitempty"`
+	Timeout          string            `json:"timeout"`
+	MaxScanDuration  string            `json:"max_scan_duration,omitempty"`
+	Proxy            bool              `json:"proxy"`
+	HTTPAuth         bool              `json:"http_auth"`
+	WPAuth           bool              `json:"wp_auth"`
+	ConfigFile       string            `json:"config_file,omitempty"`
+}
+
+func optionsOf(o *cli.ScanOptions) *Options {
+	out := &Options{
+		Enumerate: o.EnumerateSpec, DetectionMode: string(o.DetectionMode), PluginsDetection: string(o.PluginsDetection),
+		ThemesDetection: string(o.ThemesDetection), CrawlPages: o.CrawlPages, PluginsList: o.PluginsList, ThemesList: o.ThemesList,
+		ContentDir: o.ContentDir, PluginsDir: o.PluginsDir, LoginURI: o.LoginURI, Scope: o.Scope, Resolve: o.Resolve,
+		Threads: o.Threads, Timeout: o.Timeout.String(), Proxy: o.Proxy != nil, HTTPAuth: o.HTTPAuth != nil, WPAuth: o.WPAuth != nil,
+		ConfigFile: o.ConfigFile,
+	}
+	if out.Enumerate == "" {
+		out.Enumerate = cli.DefaultEnumeration
+	}
+	if o.Throttle > 0 {
+		out.Throttle = o.Throttle.String()
+	}
+	if o.MaxScanDuration > 0 {
+		out.MaxScanDuration = o.MaxScanDuration.String()
+	}
+	return out
 }
 
 // Tool identifies the scanner.
@@ -226,6 +278,9 @@ type JSLibrary struct {
 	Name    string   `json:"name"`
 	Version *Version `json:"version"`
 	URLs    []string `json:"urls"` // where it was seen, at most five
+	// Bundled is set for the copies WordPress ships in wp-includes: they
+	// are updated with WordPress, not on their own.
+	Bundled bool `json:"bundled_with_core,omitempty"`
 
 	Vulnerabilities []Vulnerability `json:"vulnerabilities"`
 }
@@ -323,11 +378,21 @@ type Stats struct {
 	BytesSent      int64   `json:"bytes_sent"`
 	BytesReceived  int64   `json:"bytes_received"`
 	ElapsedSeconds float64 `json:"elapsed_seconds"`
+	Retries        int64   `json:"retries"`         // requests sent again after a network error, a 429 or a 502-504
+	Blocked        int64   `json:"blocked"`         // answers that were a rate limit, an overload or a firewall block page
+	FailedRequests int     `json:"failed_requests"` // requests that failed; errors lists the first maxErrors of them
 }
 
 // normalize replaces nil slices with empty ones so the JSON report always
 // has arrays where the format documents them.
 func (r *Result) normalize() {
+	if r.Summary == nil {
+		r.Summary = &Summary{}
+	}
+	if r.Options == nil {
+		r.Options = &Options{}
+	}
+	r.Summary.Risks = nonNil(r.Summary.Risks)
 	r.Target.Redirects = nonNil(r.Target.Redirects)
 	r.Target.Scope = nonNil(r.Target.Scope)
 	r.InterestingFindings = nonNil(r.InterestingFindings)

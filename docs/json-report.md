@@ -15,13 +15,14 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `target` | [Target](#target) | What was scanned |
 | `detection_mode` | string | `passive`, `mixed` or `aggressive` |
 | `started_at`, `finished_at` | string | RFC 3339 UTC timestamps, second precision |
-| `status` | string | `completed`, `stopped` (a pre-flight check stopped the scan, see `stop`), `interrupted` (Ctrl-C; results are partial) or `timed_out` (`--max-scan-duration` ran out; results are partial) |
+| `status` | string | `completed`, `stopped` (a pre-flight check stopped the scan, see `stop`), `interrupted` (Ctrl-C; results are partial), `timed_out` (`--max-scan-duration` ran out; results are partial) or `blocked` (the target kept failing or refusing requests, so the scan stopped; results are partial, see `notices`) |
 | `stop` | [Stop](#stop) or null | Why the scan stopped early |
 | `web_server` | object or null | `header`: the homepage's `Server` header (empty when absent); `family`: `apache`, `nginx`, `iis` or `unknown` |
 | `wordpress` | object or null | `detected` (boolean; `false` only when `--force` scanned anyway), `content_url` (the wp-content directory, omitted when it was not seen), `evidence` ([Evidence](#evidence) list) |
 | `interesting_findings` | [Finding](#finding) list | In the order of the table below |
 | `version` | [Version](#version) or null | WordPress core version; null when the scan stopped first. `latest` and `outdated` are set when the WordPress.org data is downloaded |
-| `core_vulnerabilities` | [Vulnerability](#vulnerability) list | Core vulnerabilities that apply to `version`; empty when the version is unknown |
+| `core_vulnerabilities` | [Vulnerability](#vulnerability) list | Core vulnerabilities that apply to `version`; empty when the version is unknown. Without `--possible`, only `confirmed` and `likely` ones |
+| `core_possible_vulnerabilities` | [PossibleVulns](#possiblevulns) | A summary of the possible core vulnerabilities; omitted when there are none |
 | `main_theme` | [Theme](#theme) or null | Null when not detected, in aggressive mode (its signals are passive) or when the scan stopped first. With `--wp-auth`, the active theme |
 | `themes` | [Theme](#theme) list | The other installed themes found, without the main theme and its parent; sorted by slug |
 | `plugins` | [Plugin](#plugin) list | Sorted by slug |
@@ -31,9 +32,11 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `media` | [Media](#media) list | Sorted by ID; empty unless media were enumerated (`-e m`) |
 | `vulnerability_data` | object or null | The data the scan matched against: `directory` (the `--data-dir`) and `sources`, a list of `name` (`wordfence`, `cve`, `wporg`, `retirejs` or `exploits`), `updated_at` (RFC 3339) and `entries` (vulnerabilities, slugs, libraries, or CVEs with a public exploit). `sources` is empty before `cmsrecon update` |
 | `vulnerability_counts` | object | `confirmed`, `likely` and `possible`: the vulnerabilities of every component by verdict. `possible` counts the summed-up ones too (see `possible_vulnerabilities`) |
+| `summary` | [Summary](#summary) | The most serious findings and vulnerabilities, most severe first |
+| `scan_options` | [ScanOptions](#scanoptions) | How the scan was run |
 | `notices` | string list | Things the user should know, e.g. missing or stale vulnerability data, or a list that replaced another |
 | `errors` | list | Requests that failed (`url`, `error`). A failed request does not stop the scan; the check that needed it reports nothing |
-| `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead) and `elapsed_seconds` |
+| `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead), `elapsed_seconds`, `retries` (requests sent again after a network error, a 429 or a 502-504), `blocked` (answers that were a rate limit, an overload or a firewall block page) and `failed_requests` (`errors` lists the first 100) |
 
 ## Target
 
@@ -55,6 +58,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | Code | Meaning |
 |---|---|
 | `connection_failed` | The homepage could not be fetched (DNS, TCP, TLS or timeout error) |
+| `blocked` | The homepage was a rate limit, an overload or a firewall challenge; the hint says what to do. `--force` scans anyway |
 | `http_auth_required` | HTTP 401; use `--http-auth`, or the credentials given were rejected |
 | `proxy_auth_required` | HTTP 407 from the proxy |
 | `forbidden` | HTTP 403 on the homepage without `--force` |
@@ -182,6 +186,7 @@ The vulnerabilities that only may apply to a plugin or theme, because its versio
 | `name` | string | The library, named as in the retire.js repository (`jquery`, `jquery-ui`, `bootstrap`, `moment.js`, …) |
 | `version` | [Version](#version) | `number` is empty when unknown |
 | `urls` | string list | Where it was seen, at most five |
+| `bundled_with_core` | boolean | The copy WordPress ships in `wp-includes`, updated with WordPress; omitted when false. Each copy of a library (another version, in a plugin) is its own entry |
 | `vulnerabilities` | [Vulnerability](#vulnerability) list | Only matched when the version is known |
 
 ## User
@@ -244,6 +249,34 @@ A link to public exploit code. cmsrecon never downloads or runs it.
 | `page_url` | string | Its attachment page; omitted when unknown |
 | `mime_type`, `title` | string | From the REST API; omitted otherwise |
 | `evidence` | [Evidence](#evidence) list | `REST API` or `Attachment ID` |
+
+## Summary
+
+| Field | Type | Description |
+|---|---|---|
+| `vulnerabilities_checked` | boolean | `false` when there was no vulnerability data (Wordfence or CVE List): then an empty `risks` does not mean "not vulnerable" |
+| `risks` | Risk list | At most 15: the `critical`, `high` and `medium` findings, and the `confirmed` and `likely` vulnerabilities of every component. Sorted by severity, then those with a public exploit, then confirmed before likely |
+| `more_risks` | integer | Risks left out of the list |
+
+Each Risk has `severity` (`critical`, `high`, `medium`, `low`, or empty when unrated), `kind` (`finding` or `vulnerability`), `title`, and for vulnerabilities `component` (e.g. `plugin contact-form-7 5.3.1`, `WordPress 6.4.2`, `library jquery 1.12.4`), `verdict`, `cve` and `public_exploit` (`true` when an exploit or proof of concept is linked). Findings have their `url`. Empty fields are omitted.
+
+## ScanOptions
+
+The options the scan ran with, for a report's method section. Secrets are never recorded: `proxy`, `http_auth` and `wp_auth` only say whether they were used.
+
+| Field | Type | Description |
+|---|---|---|
+| `enumerate` | string | `-e` as given, e.g. `vp,vt,cb,dbe,bf,u` or `+tt` |
+| `detection_mode`, `plugins_detection`, `themes_detection` | string | `passive`, `mixed` or `aggressive` |
+| `crawl_pages` | integer | `--crawl` |
+| `plugins_list`, `themes_list` | string list | `--plugins-list`, `--themes-list`; omitted when not given |
+| `wp_content_dir`, `wp_plugins_dir`, `login_uri` | string | Omitted when not given |
+| `scope` | string list | `--scope`; omitted when not given |
+| `resolve` | object | Host name to the address connected to (`--resolve`, `--vhost`); omitted when not given |
+| `threads` | integer | Concurrent requests |
+| `throttle`, `timeout`, `max_scan_duration` | string | Go durations, e.g. `500ms`, `1m0s`; `throttle` and `max_scan_duration` are omitted when not set |
+| `proxy`, `http_auth`, `wp_auth` | boolean | Whether a proxy, HTTP authentication or an Application Password was used |
+| `config_file` | string | The config file whose defaults were applied; omitted when none |
 
 ## Example
 
@@ -389,6 +422,20 @@ Abridged output of a mixed-mode scan:
     ]
   },
   "vulnerability_counts": { "confirmed": 1, "likely": 0, "possible": 0 },
+  "summary": {
+    "vulnerabilities_checked": true,
+    "risks": [
+      {
+        "severity": "critical", "kind": "vulnerability", "title": "Contact Form 7 <= 5.3.1 - Unrestricted File Upload",
+        "component": "plugin contact-form-7 5.3.1", "verdict": "confirmed", "cve": ["CVE-2020-35489"], "public_exploit": true
+      }
+    ],
+    "more_risks": 0
+  },
+  "scan_options": {
+    "enumerate": "vp,vt,cb,dbe,bf,u", "detection_mode": "mixed", "plugins_detection": "passive", "themes_detection": "passive",
+    "crawl_pages": 10, "threads": 5, "timeout": "1m0s", "proxy": false, "http_auth": false, "wp_auth": false
+  },
   "notices": [],
   "errors": [],
   "stats": { "requests": 41, "bytes_sent": 10240, "bytes_received": 352000, "elapsed_seconds": 3.912 }

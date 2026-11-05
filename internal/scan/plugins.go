@@ -29,6 +29,7 @@ const (
 	confVersionSignature   = 80
 	confVersionGenericMeta = 60
 	confVersionBanner      = 50 // "/*! name - v1.2.3" at the top of one of its files
+	confStrongSignature    = 80 // signature evidence at least this strong is kept without its folder
 )
 
 // genericGeneratorRe matches the meta generators some plugins add with
@@ -64,6 +65,12 @@ func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 		if s.aggressive() {
 			s.fromListing(ctx, set, s.plugins, nil)
 			s.pluginsFromPostTypes(ctx, set)
+			for _, f := range s.combinedFiles(ctx) {
+				for _, slug := range slugsInCombined(f.body, s.plugins.Path) {
+					set.add(slug, Evidence{Method: "Paths in a combined CSS or JS file", Mode: modeAggressive, URL: f.url, Value: prefixTail(s.plugins.Path) + slug + "/", Confidence: confPluginURLs})
+					set.observe(slug, "")
+				}
+			}
 		}
 	}
 	list := s.opts.Enumerate.Plugins
@@ -121,7 +128,21 @@ func (s *Scanner) bruteForce(ctx context.Context, set *componentSet, label strin
 		bySlug[u] = slug
 		urls = append(urls, u)
 	}
-	for _, h := range s.probe(ctx, label, urls) {
+	hits := s.probe(ctx, label, urls)
+	// A real site has a handful of the plugins on a list, never a third
+	// of them: that many "hits" means the site answers made-up paths as if
+	// they existed, so they prove nothing. Listings are still proof.
+	if n := len(hits); n >= 20 && n*10 > len(urls)*3 {
+		s.notice("%s: %d of the %d paths brute-forced look present, which no real site has: the site answers paths that do not exist as if they did, so those results were dropped (only directory listings are kept).", label, n, len(urls))
+		var listed []probeHit
+		for _, h := range hits {
+			if h.listed {
+				listed = append(listed, h)
+			}
+		}
+		hits = listed
+	}
+	for _, h := range hits {
 		set.add(bySlug[h.url], Evidence{Method: "Known location", Mode: modeAggressive, URL: h.url, Value: fmt.Sprintf("HTTP %d", h.status), Confidence: h.confidence()})
 		set.confirm(bySlug[h.url])
 	}
@@ -154,7 +175,28 @@ func (s *Scanner) verify(ctx context.Context, set *componentSet, c *component, d
 		if _, ok := s.probeOne(ctx, under(dir, c.slug+"/")); ok {
 			set.confirm(c.slug)
 		}
+	case s.weakSignature(set, c):
+		// Found only by a signature, a REST namespace or a post type the
+		// plugin shares with others (WPForms Pro uses WPForms Lite's
+		// settings object): drop it when its folder is clearly missing.
+		// The readme was already asked for and was not there.
+		res := s.do(ctx, httpclient.Request{Method: http.MethodHead, URL: under(dir, c.slug+"/")})
+		if res != nil && res.Blocked == "" && (res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusGone) {
+			set.mu.Lock()
+			c.gone = true
+			set.mu.Unlock()
+		}
 	}
+}
+
+// weakSignature reports whether a component is known only from what its
+// pages show indirectly (signatures, REST namespaces, post types), with
+// less than confStrongSignature: strong signatures such as Yoast's HTML
+// comment are kept even when a hardened site hides the plugin's folder.
+func (s *Scanner) weakSignature(set *componentSet, c *component) bool {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	return !c.observed && !c.confirmed && combine(c.evidence) < confStrongSignature
 }
 
 // keep decides whether a component is reported: not when it was only
@@ -167,6 +209,8 @@ func (s *Scanner) keep(c *component) bool {
 	case c.weakOnly():
 		return false
 	case c.urlsOnly() && c.gone:
+		return false
+	case !c.observed && c.gone:
 		return false
 	}
 	return true
@@ -221,12 +265,12 @@ func (s *Scanner) pluginsFromPages(set *componentSet, pages []labelledPage, pref
 	passive := map[string]bool{} // the plugin's assets were seen on a passive page
 	for _, p := range pages {
 		seen := map[string]bool{}
-		for _, u := range p.urls {
-			path, ok := s.sitePath(u)
+		for _, orig := range p.urls {
+			u, ok := s.siteURL(orig)
 			if !ok {
 				continue
 			}
-			slug := slugIn(path, prefix)
+			slug := slugIn(u.Path, prefix)
 			if slug == "" {
 				continue
 			}
@@ -247,12 +291,23 @@ func (s *Scanner) pluginsFromPages(set *componentSet, pages []labelledPage, pref
 			}
 		}
 	}
+	// A ?ver= that the assets of three plugins or more share is the
+	// WordPress version (hidden elsewhere) or a cache buster, not theirs.
+	shared := map[string]int{}
+	for _, urls := range assets {
+		for v := range s.assetVersions(urls, core) {
+			shared[v]++
+		}
+	}
 	for k, urls := range assets {
 		mode := modeAggressive
 		if passive[k] {
 			mode = modePassive
 		}
 		for v, paths := range s.assetVersions(urls, core) {
+			if shared[v] >= 3 {
+				continue
+			}
 			var example string
 			for _, u := range urls {
 				if u.Query().Get("ver") == v {
@@ -359,7 +414,7 @@ func (s *Scanner) pluginsFromREST(ctx context.Context, set *componentSet) {
 // plugins directory.
 func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *component, dir *url.URL) {
 	base := under(dir, c.slug+"/")
-	for _, name := range []string{"readme.txt", "README.txt"} {
+	for _, name := range []string{"readme.txt", "README.txt", "readme.md"} {
 		u := base + name
 		res := s.get(ctx, u)
 		if res == nil || res.StatusCode != 200 {
@@ -381,7 +436,9 @@ func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *componen
 		if info.changelog != "" {
 			c.versions = append(c.versions, Evidence{Method: name + " changelog", Mode: modeAggressive, URL: u, Value: info.changelog, Confidence: confVersionChangelog})
 		}
-		hasVersion := len(c.versions) > 0
+		// Only the readme's own version ends the search: a ?ver= seen on
+		// the pages is often the WordPress version or a cache buster.
+		hasVersion := info.stableTag != "" || info.changelog != ""
 		set.mu.Unlock()
 		if hasVersion {
 			return
@@ -389,7 +446,7 @@ func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *componen
 		break
 	}
 	// No version yet: some plugins keep the changelog in its own file.
-	for _, name := range []string{"changelog.txt", "CHANGELOG.md"} {
+	for _, name := range []string{"changelog.txt", "CHANGELOG.md", "CHANGELOG.txt"} {
 		u := base + name
 		res := s.get(ctx, u)
 		if res == nil || res.StatusCode != 200 {

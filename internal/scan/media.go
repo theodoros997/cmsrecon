@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/theodoros997/cmsrecon/internal/httpclient"
 )
 
 // maxMedia caps how many media the REST API is paged through for.
@@ -99,19 +101,32 @@ func (s *Scanner) mediaFromIDs(ctx context.Context, from, to int) []*Media {
 		ids = append(ids, id)
 	}
 	uploads := s.content.Path + "uploads/"
+	// What an ID that does not exist gets: "404 to homepage" plugins
+	// redirect every unknown ID to the same place, which says nothing.
+	var notThere string
+	if res := s.do(ctx, httpclient.Request{URL: s.urlWithQuery("", "attachment_id=2147483646"), MaxBody: 64 << 10}); res != nil && res.IsRedirect() {
+		if loc, err := res.Location(); err == nil {
+			notThere = sameURL(loc.String())
+		}
+	}
+	home := sameURL(s.base.String())
 	found := make([]*Media, len(ids))
 	s.parallel(ctx, len(ids), func(i int) {
 		id := ids[i]
 		u := s.urlWithQuery("", "attachment_id="+strconv.Itoa(id))
-		res := s.get(ctx, u)
-		if res == nil {
+		// Not cached: a range of IDs would otherwise keep every page.
+		res := s.do(ctx, httpclient.Request{URL: u, MaxBody: 512 << 10})
+		if res == nil || res.Blocked != "" {
 			return
 		}
 		ev := []Evidence{{Method: "Attachment ID", Mode: modeAggressive, URL: u, Confidence: 100}}
 		switch {
 		case res.IsRedirect():
 			loc, err := res.Location()
-			if err != nil || loc.String() == s.base.String() {
+			if err != nil || !s.client.InScope(loc) {
+				return
+			}
+			if t := sameURL(loc.String()); t == home || t == notThere {
 				return
 			}
 			ev[0].Value = loc.String()
@@ -155,6 +170,17 @@ func (s *Scanner) uploadURL(body []byte, uploads string) string {
 		}
 	}
 	return ""
+}
+
+// sameURL normalizes a URL for comparison: no fragment, no trailing slash.
+func sameURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.Fragment = ""
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + u.Path + "?" + u.RawQuery
 }
 
 // httpURL keeps a URL only if it is an absolute http(s) URL.

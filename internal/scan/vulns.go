@@ -18,7 +18,8 @@ func (s *Scanner) matchVulnerabilities() {
 		// unknown version, which says nothing; only a known version is
 		// matched.
 		if d.Version != "" {
-			r.CoreVulnerabilities = s.toVulns(db.Match(vulndb.KindCore, vulndb.CoreSlug, d))
+			ms := vulndb.CoreBackports(db.Match(vulndb.KindCore, vulndb.CoreSlug, d), d.Version)
+			r.CoreVulnerabilities, r.CorePossible = s.splitPossible(ms)
 		} else if !db.Empty() {
 			s.res.Notices = append(s.res.Notices, "The WordPress version is unknown, so core vulnerabilities were not matched.")
 		}
@@ -27,7 +28,7 @@ func (s *Scanner) matchVulnerabilities() {
 	for t := r.MainTheme; t != nil; t = t.Parent {
 		themes = append(themes, t)
 	}
-	var possible int
+	possible := r.CorePossible.count()
 	for _, t := range themes {
 		t.Vulnerabilities, t.Possible = s.splitPossible(db.Match(vulndb.KindTheme, t.Slug, detected(t.Version)))
 		possible += t.Possible.count()

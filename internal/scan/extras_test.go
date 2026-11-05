@@ -86,23 +86,31 @@ func TestCoreVersionFromFileHashes(t *testing.T) {
 
 func TestHashEvidence(t *testing.T) {
 	found := &Version{Number: "6.4.2", Confidence: 92}
-	one := hashEvidence([]string{"6.4.2"}, "u", found)
+	one := hashEvidence([]string{"6.4.2"}, "u", found, "6.5")
 	if len(one) != 1 || one[0].Confidence != 100 {
 		t.Errorf("one release: %+v", one)
 	}
-	confirms := hashEvidence([]string{"6.4.2", "6.4.3"}, "u", found)
+	confirms := hashEvidence([]string{"6.4.2", "6.4.3"}, "u", found, "6.5")
 	if len(confirms) != 1 || confirms[0].Value != "6.4.2" || confirms[0].Confidence != 90 {
 		t.Errorf("two releases, one of them found: %+v", confirms)
 	}
-	few := hashEvidence([]string{"6.4.2", "6.4.3"}, "u", &Version{})
+	few := hashEvidence([]string{"6.4.2", "6.4.3"}, "u", &Version{}, "6.5")
 	if len(few) != 2 || few[0].Confidence != 50 {
 		t.Errorf("two releases, nothing found: %+v", few)
 	}
 	if v := combineVersions(few); v.Number == "" {
 		t.Errorf("two candidates at 50%% still give a version: %+v", v)
 	}
-	if hashEvidence([]string{"1", "2", "3", "4", "5"}, "u", found) != nil {
+	if hashEvidence([]string{"1", "2", "3", "4", "5"}, "u", found, "6.5") != nil {
 		t.Error("five releases are too vague")
+	}
+	// The checksums know up to 6.4.1, the site runs 6.4.2, which changed no
+	// static file: its files look like 6.4.1's.
+	if newest := hashEvidence([]string{"6.4.1"}, "u", &Version{}, "6.4.1"); len(newest) != 1 || newest[0].Confidence != 60 {
+		t.Errorf("the newest known release is not certain: %+v", newest)
+	}
+	if ev := hashEvidence([]string{"6.4.1"}, "u", found, "6.4.1"); ev != nil {
+		t.Errorf("the pages name 6.4.2, newer than any checksum: the hashes cannot tell, got %+v", ev)
 	}
 }
 

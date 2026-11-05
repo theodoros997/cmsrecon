@@ -23,8 +23,10 @@ const (
 const maxScriptFetches = 30
 
 type jsCandidate struct {
+	name     string
 	urls     []string
 	versions []Evidence
+	bundled  bool // a copy WordPress core ships in wp-includes
 }
 
 // detectJSLibraries finds the JavaScript libraries (and a few CSS ones)
@@ -33,13 +35,19 @@ type jsCandidate struct {
 func (s *Scanner) detectJSLibraries(ctx context.Context) []*JSLibrary {
 	var mu sync.Mutex
 	libs := map[string]*jsCandidate{}
+	// Each file is its own copy: core's jQuery 3.7.1 must not hide a
+	// plugin's jquery-1.8.3.min.js.
 	add := func(d vulndb.JSDetection, where string, e *Evidence) {
 		mu.Lock()
 		defer mu.Unlock()
-		c := libs[d.Library]
+		k := d.Library + "|" + copyKey(where)
+		c := libs[k]
 		if c == nil {
-			c = &jsCandidate{}
-			libs[d.Library] = c
+			c = &jsCandidate{name: d.Library}
+			libs[k] = c
+		}
+		if u, err := url.Parse(where); err == nil && vulndb.CoreBundled(u.Path) {
+			c.bundled = true
 		}
 		if where != "" && len(c.urls) < 5 && !slices.Contains(c.urls, where) {
 			c.urls = append(c.urls, where)
@@ -82,16 +90,71 @@ func (s *Scanner) detectJSLibraries(ctx context.Context) []*JSLibrary {
 		})
 	}
 
-	names := make([]string, 0, len(libs))
-	for n := range libs {
-		names = append(names, n)
+	return mergeCopies(libs)
+}
+
+// copyKey is a script's URL without its query: the same file with another
+// ?ver= is the same copy.
+func copyKey(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
 	}
-	slices.SortFunc(names, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
-	out := make([]*JSLibrary, 0, len(names))
-	for _, n := range names {
-		c := libs[n]
-		out = append(out, &JSLibrary{Name: n, URLs: c.urls, Version: combineVersions(c.versions)})
+	return strings.ToLower(u.Host) + u.Path
+}
+
+// mergeCopies turns the copies found into the report's libraries: one
+// entry per library and version, the copies of the same version merged. A
+// copy of unknown version is only kept when no copy of that library has a
+// known one: it is most likely the same file loaded another way.
+func mergeCopies(libs map[string]*jsCandidate) []*JSLibrary {
+	type key struct{ name, version string }
+	var order []key
+	merged := map[key]*JSLibrary{}
+	known := map[string]bool{}
+	keys := make([]string, 0, len(libs))
+	for k := range libs {
+		keys = append(keys, k)
 	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		c := libs[k]
+		v := combineVersions(c.versions)
+		if v.Number != "" {
+			known[c.name] = true
+		}
+		mk := key{c.name, v.Number}
+		l := merged[mk]
+		if l == nil {
+			l = &JSLibrary{Name: c.name, Version: v}
+			merged[mk] = l
+			order = append(order, mk)
+		} else {
+			l.Version.Evidence = append(l.Version.Evidence, v.Evidence...)
+			if v.Confidence > l.Version.Confidence {
+				l.Version.Confidence, l.Version.Candidates = v.Confidence, v.Candidates
+			}
+		}
+		for _, u := range c.urls {
+			if len(l.URLs) < 5 && !slices.Contains(l.URLs, u) {
+				l.URLs = append(l.URLs, u)
+			}
+		}
+		l.Bundled = l.Bundled || c.bundled
+	}
+	out := make([]*JSLibrary, 0, len(order))
+	for _, mk := range order {
+		if mk.version == "" && known[mk.name] {
+			continue
+		}
+		out = append(out, merged[mk])
+	}
+	slices.SortStableFunc(out, func(a, b *JSLibrary) int {
+		if c := strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)); c != 0 {
+			return c
+		}
+		return vulndb.Compare(a.Version.Number, b.Version.Number)
+	})
 	return out
 }
 

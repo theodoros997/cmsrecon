@@ -2,13 +2,19 @@ package scan
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
+	"syscall"
 
+	"github.com/theodoros997/cmsrecon/internal/cli"
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
 )
 
@@ -41,6 +47,7 @@ func (s *Scanner) preflight(ctx context.Context) bool {
 		s.plugins = s.dirOption(s.opts.PluginsDir)
 	}
 	s.themes = s.content.ResolveReference(&url.URL{Path: "themes/"})
+	s.core = s.detectCoreRoot()
 
 	if s.wordPressCom(contentFound) {
 		s.stop(StopWordPressCom, "The site is hosted on WordPress.com.",
@@ -81,6 +88,62 @@ func (s *Scanner) stop(code, msg, hint string) {
 	s.res.Stop = &Stop{Code: code, Message: msg, Hint: hint}
 }
 
+// blockedHint says what to do about a homepage that is refused.
+func blockedHint(res *httpclient.Response) string {
+	switch {
+	case res.StatusCode == http.StatusTooManyRequests:
+		hint := "The site rate-limits this IP. Wait"
+		if ra := res.Header.Get("Retry-After"); ra != "" {
+			hint += " (it asks for " + ra + " seconds)"
+		}
+		return hint + ", then scan more slowly: --throttle 1s --threads 1."
+	case strings.HasPrefix(res.Blocked, "Cloudflare"):
+		return "A browser check blocks automated requests. Scan from an allowlisted IP, or solve the check in a browser and pass its cf_clearance cookie with --cookie and the same --user-agent."
+	case res.Blocked == "server overload":
+		return "The server is overloaded, down, or in maintenance. Try again later; --force scans anyway."
+	}
+	return "A firewall blocks this IP. Scan from an allowlisted IP, more slowly (--throttle 1s), or with --force to try anyway."
+}
+
+// connectError says in words why the homepage could not be fetched, and
+// what to try.
+func connectError(err error, o *cli.ScanOptions) (why, hint string) {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
+		err = ue.Err // drop the repeated `Get "https://...":`
+	}
+	var dnsErr *net.DNSError
+	var certErr *tls.CertificateVerificationError
+	var hostErr x509.HostnameError
+	var authErr x509.UnknownAuthorityError
+	var invalidErr x509.CertificateInvalidError
+	var recordErr tls.RecordHeaderError
+	switch {
+	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
+		return fmt.Sprintf("the host name %s does not resolve", dnsErr.Name),
+			"Check the spelling. For a site that is not in DNS (or behind a CDN), --resolve ADDRESS connects to its server."
+	case errors.Is(err, syscall.ECONNREFUSED) || strings.Contains(err.Error(), "actively refused"): // Windows words it so
+		return "the connection was refused (nothing listens on that port)", "Check the port, and http:// or https://."
+	case errors.As(err, &hostErr):
+		return "its TLS certificate is for another name (" + hostErr.Error() + ")", "Use --insecure to scan anyway, or --vhost NAME when -u is an IP address."
+	case errors.As(err, &authErr), errors.As(err, &invalidErr), errors.As(err, &certErr):
+		return "its TLS certificate is not trusted (" + err.Error() + ")", "Use --insecure to scan anyway."
+	case errors.As(err, &recordErr):
+		return "it does not answer TLS on that port", "Try http:// instead of https://."
+	case isTimeoutErr(err):
+		hint := "The host may be down or dropping these requests; try a longer --timeout"
+		if o.Proxy == nil {
+			hint += " or a --proxy"
+		}
+		return "the connection timed out", hint + "."
+	}
+	return err.Error(), ""
+}
+
+func isTimeoutErr(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout() || errors.Is(err, context.DeadlineExceeded)
+}
+
 // fetchHomepage requests the homepage, following http<->https redirects on
 // the same host, and other redirects only with --follow-redirect.
 func (s *Scanner) fetchHomepage(ctx context.Context) (*httpclient.Response, bool) {
@@ -89,7 +152,8 @@ func (s *Scanner) fetchHomepage(ctx context.Context) (*httpclient.Response, bool
 	for {
 		res, err := s.client.Get(ctx, u.String())
 		if err != nil {
-			s.stop(StopConnectionFailed, fmt.Sprintf("Could not connect to %s: %v", u, err), "")
+			why, hint := connectError(err, s.opts)
+			s.stop(StopConnectionFailed, fmt.Sprintf("Could not connect to %s: %s.", u, why), hint)
 			return nil, false
 		}
 		switch res.StatusCode {
@@ -103,9 +167,19 @@ func (s *Scanner) fetchHomepage(ctx context.Context) (*httpclient.Response, bool
 		case http.StatusProxyAuthRequired:
 			s.stop(StopProxyAuthRequired, "The proxy requires authentication.", "Put the credentials in the proxy URL, e.g. --proxy http://user:pass@host:8080.")
 			return nil, false
+		}
+		if res.SiteBlocked && !s.opts.Force {
+			s.stop(StopBlocked, fmt.Sprintf("%s answered with a %s (HTTP %d) instead of the homepage.", u, res.Blocked, res.StatusCode), blockedHint(res))
+			return nil, false
+		}
+		switch res.StatusCode {
 		case http.StatusForbidden:
 			if !s.opts.Force {
-				s.stop(StopForbidden, fmt.Sprintf("%s answered 403 Forbidden.", u), "A WAF or an IP allowlist may be blocking the scan. Use --force to scan anyway.")
+				what := "403 Forbidden"
+				if res.Blocked != "" {
+					what += " (a " + res.Blocked + " page)"
+				}
+				s.stop(StopForbidden, fmt.Sprintf("%s answered %s.", u, what), "A WAF or an IP allowlist may be blocking the scan. Use --force to scan anyway.")
 				return nil, false
 			}
 		}
@@ -223,7 +297,15 @@ func (s *Scanner) detectContentDir() (*url.URL, bool) {
 	counts := map[string]int{}
 	custom := map[string]int{}
 	for _, p := range s.pages() {
-		for _, u := range s.scopedURLs(p.page) {
+		for _, orig := range p.urls {
+			// Jetpack's CDN paths say nothing about where wp-content is.
+			if jetpackHostRe.MatchString(orig.Hostname()) {
+				continue
+			}
+			u, ok := s.siteURL(orig)
+			if !ok {
+				continue
+			}
 			if i := strings.Index(u.Path, "/wp-content/"); i >= 0 {
 				counts[u.Path[:i+len("/wp-content/")]]++
 			} else if m := customContentRe.FindStringSubmatch(u.Path); m != nil && strings.EqualFold(u.Hostname(), s.base.Hostname()) {
@@ -244,6 +326,58 @@ func (s *Scanner) detectContentDir() (*url.URL, bool) {
 		return s.base.ResolveReference(&url.URL{Path: "wp-content/"}), false
 	}
 	return s.base.ResolveReference(&url.URL{Path: best}), true
+}
+
+// detectCoreRoot finds where WordPress's own files are from the pages'
+// /wp-includes/ URLs: the site root on most sites, /wp/ on Bedrock and on
+// sites that give WordPress its own directory.
+func (s *Scanner) detectCoreRoot() *url.URL {
+	counts := map[string]int{}
+	for _, p := range s.pages() {
+		for _, orig := range p.urls {
+			if jetpackHostRe.MatchString(orig.Hostname()) {
+				continue
+			}
+			u, ok := s.siteURL(orig)
+			if !ok {
+				continue
+			}
+			if i := strings.Index(u.Path, "/wp-includes/"); i >= 0 && strings.HasPrefix(u.Path, s.base.Path) {
+				counts[u.Path[:i+1]]++
+			}
+		}
+	}
+	best, n := "", 0
+	for p, c := range counts {
+		if c > n || (c == n && p < best) {
+			best, n = p, c
+		}
+	}
+	if best == "" {
+		return s.base
+	}
+	return s.base.ResolveReference(&url.URL{Path: best})
+}
+
+// loginURL is the login page: --login-uri when a plugin moved it (WPS
+// Hide Login and the like), else wp-login.php in WordPress's directory.
+func (s *Scanner) loginURL() string {
+	if s.opts.LoginURI != "" {
+		if u, err := s.base.Parse(s.opts.LoginURI); err == nil && s.client.InScope(u) {
+			return u.String()
+		}
+	}
+	return s.coreURL("wp-login.php")
+}
+
+// coreURL resolves ref against WordPress's own directory, e.g.
+// "wp-includes/version.php" or "wp-login.php".
+func (s *Scanner) coreURL(ref string) string {
+	root := s.core
+	if root == nil {
+		root = s.base
+	}
+	return root.ResolveReference(&url.URL{Path: ref}).String()
 }
 
 var wpcomAssetRe = regexp.MustCompile(`(?i)^(?:s\d+\.wp\.com|[a-z0-9-]+\.files\.wordpress\.com)$`)
@@ -311,7 +445,7 @@ func (s *Scanner) detectWordPress(ctx context.Context) *WordPress {
 		})
 	}
 	if len(wp.Evidence) == 0 && s.aggressive() {
-		u := s.url("wp-login.php")
+		u := s.loginURL()
 		if res := s.get(ctx, u); res != nil && res.StatusCode == 200 && loginFormRe.Match(res.Body) {
 			wp.Evidence = append(wp.Evidence, Evidence{
 				Method: "Login page", Mode: modeAggressive, URL: u, Confidence: 90,

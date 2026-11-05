@@ -33,6 +33,13 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 	if mode.Discover() {
 		if s.aggressive() {
 			s.fromListing(ctx, set, s.themes, exclude)
+			for _, f := range s.combinedFiles(ctx) {
+				for _, slug := range slugsInCombined(f.body, s.themes.Path) {
+					if !exclude[strings.ToLower(slug)] {
+						set.add(slug, Evidence{Method: "Paths in a combined CSS or JS file", Mode: modeAggressive, URL: f.url, Value: prefixTail(s.themes.Path) + slug + "/", Confidence: confThemeOtherPageURLs})
+					}
+				}
+			}
 		}
 		for _, p := range s.discoveryPages(ctx) {
 			seen := map[string]bool{}
@@ -50,7 +57,8 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 					seen[k] = true
 					set.add(slug, Evidence{Method: "Theme URLs in the " + p.label, Mode: p.mode, URL: p.resp.URL.String(), Value: u.String(), Confidence: confThemeOtherPageURLs})
 				}
-				if v := u.Query().Get("ver"); path.Base(sp) == "style.css" && vulndb.Valid(v) && !isCoreVersion(v, core) {
+				// A dotted version only: a timestamp is a cache buster.
+				if v := u.Query().Get("ver"); path.Base(sp) == "style.css" && vulndb.Valid(v) && strings.Contains(v, ".") && !isCoreVersion(v, core) {
 					set.addVersion(slug, Evidence{Method: "?ver= on the theme's style.css", Mode: p.mode, URL: u.String(), Value: v, Confidence: confThemeStyleVer})
 				}
 			}

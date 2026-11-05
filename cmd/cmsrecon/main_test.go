@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/theodoros997/cmsrecon/internal/cli"
 	"github.com/theodoros997/cmsrecon/internal/scan"
 )
 
@@ -50,6 +51,17 @@ func TestRun(t *testing.T) {
 		{"scan help lists exit code 5", []string{"scan", "-h"}, exitOK, []string{"5    The scan completed and found confirmed or likely vulnerabilities"}},
 		{"update help", []string{"update", "-h"}, exitOK, []string{"cmsrecon update [options]", "retirejs"}},
 		{"update unknown source", []string{"update", "--sources", "nvd"}, exitUsage, nil},
+		{"additive enumeration", []string{"-u", "example.com", "-e", "+tt,+m1-5", "--dry-run"}, exitOK,
+			[]string{"Timthumbs:       yes", "attachment IDs 1-5", "Config backups:  yes", "author IDs 1-10"}},
+		{"dry run estimate and data", []string{"-u", "example.com", "--dry-run", "--data-dir", os.TempDir() + "/cmsrecon-none"}, exitOK,
+			[]string{"Requests:        about ", "plus about 6 for each plugin and theme found", "(empty: run \"cmsrecon update\" or add --update)", "User-Agent:      cmsrecon/"}},
+		{"dry run ap without brute force", []string{"-u", "example.com", "-e", "ap", "--dry-run"}, exitOK,
+			[]string{"no brute force: -e ap only chooses the list to brute-force, which --plugins-detection passive does not do (use mixed)"}},
+		{"dry run vhost", []string{"-u", "https://10.0.0.5/", "--vhost", "www.example.com", "--login-uri", "/door/", "--dry-run"}, exitOK,
+			[]string{"Target:          https://www.example.com/", "Connect to:      10.0.0.5 for www.example.com", "Login page:      /door/"}},
+		{"report help", []string{"report", "-h"}, exitOK, []string{"cmsrecon report [options] REPORT.json"}},
+		{"report without a file", []string{"report"}, exitUsage, nil},
+		{"target that is an option", []string{"scan", "--", "-e"}, exitUsage, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -176,5 +188,98 @@ func TestScanExit(t *testing.T) {
 		if got := scanExit(&tt.res); got != tt.want {
 			t.Errorf("%s: scanExit = %d, want %d", tt.name, got, tt.want)
 		}
+	}
+}
+
+// TestMain keeps the developer's own config file out of the tests.
+func TestMain(m *testing.M) {
+	os.Setenv(cli.ConfigEnv, "none")
+	os.Exit(m.Run())
+}
+
+func TestUnknownCommandHint(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"example.com", "-e", "vp"}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("exit code = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "cmsrecon scan example.com -e vp") {
+		t.Errorf("stderr = %q", &stderr)
+	}
+}
+
+func TestScanHTMLToFileWithLog(t *testing.T) {
+	srv := fakeSite(t)
+	dir := t.TempDir()
+	out, log := filepath.Join(dir, "report.html"), filepath.Join(dir, "requests.tsv")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", srv.URL, "-o", out, "--log-requests", log, "--detection-mode", "passive", "--data-dir", t.TempDir()}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit code = %d\nstderr:\n%s", code, &stderr)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "<!DOCTYPE html>") || !strings.Contains(string(data), "6.4.2") {
+		t.Errorf("-o report.html should write HTML:\n%.300s", data)
+	}
+	for _, want := range []string{"Found: WordPress 6.4.2", "Vulnerabilities not checked", "Summary", "Report written to " + out, "Requests logged to " + log} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr missing %q:\n%s", want, &stderr)
+		}
+	}
+	logged, err := os.ReadFile(log)
+	if err != nil || !strings.Contains(string(logged), "\tGET\t200\t") {
+		t.Errorf("request log = %q, %v", logged, err)
+	}
+}
+
+func TestReportCommand(t *testing.T) {
+	srv := fakeSite(t)
+	dir := t.TempDir()
+	saved := filepath.Join(dir, "scan.json")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"scan", srv.URL, "-o", saved, "--detection-mode", "passive", "--data-dir", t.TempDir()}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("scan exit code = %d\n%s", code, &stderr)
+	}
+
+	md := filepath.Join(dir, "scan.md")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"report", saved, "-o", md}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("report exit code = %d\n%s", code, &stderr)
+	}
+	data, err := os.ReadFile(md)
+	if err != nil || !strings.HasPrefix(string(data), "# WordPress scan report") || !strings.Contains(string(data), "6.4.2") {
+		t.Errorf("Markdown report = %.300s, %v", data, err)
+	}
+
+	stdout.Reset()
+	if code := run([]string{"report", saved}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("report to stdout exit code = %d\n%s", code, &stderr)
+	}
+	if !strings.Contains(stdout.String(), "WordPress detected") || !strings.Contains(stdout.String(), "Summary") {
+		t.Errorf("CLI report:\n%s", &stdout)
+	}
+
+	notJSON := filepath.Join(dir, "notes.txt")
+	os.WriteFile(notJSON, []byte("hello"), 0o600)
+	if code := run([]string{"report", notJSON}, &stdout, &stderr); code != exitError {
+		t.Errorf("a file that is not a report: exit code %d", code)
+	}
+}
+
+func TestUpdateArgs(t *testing.T) {
+	o, err := cli.ParseScan([]string{"example.com", "--data-dir", "/data", "--timeout", "20", "--proxy", "http://127.0.0.1:8080", "--update"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(updateArgs(o), " ")
+	if got != "--data-dir /data --timeout 20s --proxy http://127.0.0.1:8080 --config none" {
+		t.Errorf("updateArgs = %q", got)
+	}
+	u, err := cli.ParseUpdate(updateArgs(o), &bytes.Buffer{})
+	if err != nil || u.DataDir != "/data" || u.Proxy.Host != "127.0.0.1:8080" {
+		t.Errorf("the update command must accept them: %+v, %v", u, err)
 	}
 }

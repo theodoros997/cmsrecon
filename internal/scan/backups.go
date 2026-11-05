@@ -50,8 +50,17 @@ func (s *Scanner) checkConfigBackups(ctx context.Context) []Finding {
 	}
 	var mu sync.Mutex
 	var out []Finding
-	s.parallel(ctx, len(configBackupNames), func(i int) {
-		u := s.url(configBackupNames[i])
+	// wp-config.php sits in the site root, or next to WordPress when it
+	// has its own directory: both are checked.
+	var urls []string
+	for _, name := range configBackupNames {
+		urls = append(urls, s.url(name))
+		if c := s.coreURL(name); c != s.url(name) {
+			urls = append(urls, c)
+		}
+	}
+	s.parallel(ctx, len(urls), func(i int) {
+		u := urls[i]
 		res := s.do(ctx, httpclient.Request{URL: u, MaxBody: 256 << 10})
 		// A real copy starts with PHP code; an HTML page that shows
 		// define() calls (a catch-all site, a tutorial) is not one.

@@ -106,7 +106,12 @@ func TestParseScanErrors(t *testing.T) {
 		{"bad header", []string{"-u", "a.com", "-H", "nocolon"}, "Name: value"},
 		{"bad credentials", []string{"-u", "a.com", "--wp-auth", "nopassword"}, "login:password"},
 		{"bad proxy scheme", []string{"-u", "a.com", "--proxy", "ftp://h:1"}, "unsupported --proxy"},
-		{"unknown flag", []string{"-u", "a.com", "--password-attack"}, "not defined"},
+		{"unknown flag", []string{"-u", "a.com", "--bogus-flag"}, "unknown option --bogus-flag"},
+		{"wpscan password option", []string{"-u", "a.com", "--password-attack"}, "never guesses passwords"},
+		{"api token", []string{"-u", "a.com", "--api-token", "x"}, "needs no API token"},
+		{"target that is an option", []string{"-u", "--dry-run"}, "looks like an option"},
+		{"resolve and proxy", []string{"-u", "a.com", "--resolve", "1.2.3.4", "--proxy", "http://p:8080"}, "one or the other"},
+		{"bad resolve", []string{"-u", "a.com", "--resolve", "a.com=nope"}, "not an IP address"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -211,4 +216,10 @@ func TestWPScanStyleOptions(t *testing.T) {
 			t.Errorf("%v: want an error", args)
 		}
 	}
+}
+
+// TestMain keeps the developer's own config file out of the tests.
+func TestMain(m *testing.M) {
+	os.Setenv(ConfigEnv, "none")
+	os.Exit(m.Run())
 }
