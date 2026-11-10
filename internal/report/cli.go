@@ -315,13 +315,19 @@ func (p *printer) plugins(ps []*scan.Plugin) {
 			p.printf("\n")
 		}
 		p.componentLine(pl.Slug, pl.Confidence, pl.Vulnerabilities)
-		p.detail("Location: %s", pl.Location)
+		if found := foundBy(pl.Evidence); found != "" && !p.o.Verbose {
+			p.detail("Found by: %s", found)
+		}
 		if pl.Name != "" {
 			p.detail("Name: %s", pl.Name)
 		}
 		p.detail("Version: %s", versionText(pl.Version))
+		if src := versionSource(pl.Version); src != "" && !p.o.Verbose {
+			p.detail("Version from: %s", src)
+		}
 		p.itemNotes(pl.LastUpdated, pl.Warnings, "")
 		if p.o.Verbose {
+			p.detail("Folder: %s (a plugin's folder is usually not browsable: 404 or 403 there is normal)", pl.Location)
 			if pl.ReadmeURL != "" {
 				p.detail("Readme: %s", pl.ReadmeURL)
 			}
@@ -544,6 +550,65 @@ func versionText(v *scan.Version) string {
 	s := fmt.Sprintf("%s (confidence %d%%)", v.Number, v.Confidence)
 	if l := latestText(v); l != "" {
 		s += "; " + strings.ToLower(l[:1]) + l[1:]
+	}
+	return s
+}
+
+// weakVersion is the confidence below which a version comes from a single
+// weak signal, such as the ?ver= of one file.
+const weakVersion = 50
+
+// foundBy says, in one line, the strongest sign that a plugin or theme is
+// there, with a URL the reader can open to check it. A plugin's folder is
+// not such a URL: most servers answer 404 or 403 for it.
+func foundBy(ev []scan.Evidence) string {
+	best := -1
+	for i, e := range ev {
+		if best < 0 || e.Confidence > ev[best].Confidence {
+			best = i
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	e := ev[best]
+	switch {
+	case strings.HasPrefix(e.Method, "URLs in the ") && e.Value != "":
+		// The page refers to a file in the plugin's folder.
+		return e.Value + ", referenced by " + e.URL
+	case e.URL == "":
+		return e.Method
+	case e.Value != "" && e.Value != e.URL && len(e.Value) <= 40:
+		return e.Method + " (" + e.Value + "): " + e.URL
+	}
+	return e.Method + ": " + e.URL
+}
+
+// versionSource says where the reported version came from, so that it can
+// be checked, and warns when that is a weak signal.
+func versionSource(v *scan.Version) string {
+	if v == nil || v.Number == "" {
+		return ""
+	}
+	var best *scan.Evidence
+	for i, e := range v.Evidence {
+		if e.Value == v.Number && (best == nil || e.Confidence > best.Confidence) {
+			best = &v.Evidence[i]
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	s := best.Method
+	if best.URL != "" {
+		s += ": " + best.URL
+	}
+	if v.Confidence < weakVersion {
+		why := "a single signal"
+		if strings.HasPrefix(best.Method, "?ver=") {
+			why = "plugins and themes do not always set ?ver= to their version"
+		}
+		s += " (weak: " + why + "; check it)"
 	}
 	return s
 }
@@ -958,7 +1023,14 @@ func (p *printer) itemNotes(updated string, warnings []string, indent string) {
 }
 
 func (p *printer) themeDetails(t *scan.Theme, indent string) {
-	p.detail("%sLocation: %s", indent, t.Location)
+	switch {
+	case t.StyleURL != "":
+		p.detail("%sStyle: %s", indent, t.StyleURL)
+	case !p.o.Verbose:
+		if found := foundBy(t.Evidence); found != "" {
+			p.detail("%sFound by: %s", indent, found)
+		}
+	}
 	if t.Name != "" {
 		p.detail("%sName: %s", indent, t.Name)
 	}
@@ -970,8 +1042,12 @@ func (p *printer) themeDetails(t *scan.Theme, indent string) {
 		p.detail("%sAuthor: %s", indent, author)
 	}
 	p.detail("%sVersion: %s", indent, versionText(t.Version))
+	if src := versionSource(t.Version); src != "" && !p.o.Verbose {
+		p.detail("%sVersion from: %s", indent, src)
+	}
 	p.itemNotes(t.LastUpdated, t.Warnings, indent)
 	if p.o.Verbose {
+		p.detail("%sFolder: %s", indent, t.Location)
 		p.evidence("Found by", indent, t.Evidence)
 		if t.Version != nil {
 			p.evidence("Version found by", indent, t.Version.Evidence)

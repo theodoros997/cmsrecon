@@ -229,12 +229,22 @@ func TestCLIReport(t *testing.T) {
 			t.Errorf("CLI report missing %q:\n%s", want, &plain)
 		}
 	}
-	if strings.Contains(plain.String(), "Found by") || strings.Contains(plain.String(), "\x1b[") || strings.Contains(plain.String(), "Old XSS") {
+	for _, want := range []string{
+		"Found by: readme.txt: https://example.com/wp-content/plugins/contact-form-7/readme.txt",
+		"Version from: readme.txt Stable tag: https://example.com/wp-content/plugins/contact-form-7/readme.txt",
+		"Style: https://example.com/wp-content/themes/child/style.css",
+	} {
+		if !strings.Contains(plain.String(), want) {
+			t.Errorf("CLI report missing %q", want)
+		}
+	}
+	if strings.Contains(plain.String(), "(aggressive, ") || strings.Contains(plain.String(), "Folder:") || strings.Contains(plain.String(), "\x1b[") || strings.Contains(plain.String(), "Old XSS") {
 		t.Errorf("default report must have no evidence, no colours and no possible vulnerabilities:\n%s", &plain)
 	}
 	for _, want := range []string{"Found by:", "system.listMethods (aggressive, 100%)", "Reference: https://codex", "https://example.com/feed/: timeout",
 		"Affected: <= 5.3.1 (wordfence, cve)", "CWE-434", "https://contactform7.com/",
-		"Readme: https://example.com/wp-content/plugins/contact-form-7/readme.txt", "readme.txt Stable tag (aggressive, 80%): 5.3.1"} {
+		"Readme: https://example.com/wp-content/plugins/contact-form-7/readme.txt", "readme.txt Stable tag (aggressive, 80%): 5.3.1",
+		"Folder: https://example.com/wp-content/plugins/contact-form-7/ (a plugin's folder is usually not browsable"} {
 		if !strings.Contains(verbose.String(), want) {
 			t.Errorf("verbose report missing %q:\n%s", want, &verbose)
 		}

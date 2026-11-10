@@ -283,3 +283,44 @@ func TestUpdateArgs(t *testing.T) {
 		t.Errorf("the update command must accept them: %+v, %v", u, err)
 	}
 }
+
+// TestPluginEvidenceIsVerifiable is a plugin seen only through a file the
+// homepage loads, whose folder answers 404 and which has no readme: the
+// report must give a URL that works and say where the version came from.
+func TestPluginEvidenceIsVerifiable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host + "/"
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprintf(w, `<html><head><meta name="generator" content="WordPress 6.4.2" />
+<link rel="stylesheet" href="%[1]swp-content/themes/twentytwentyfour/style.css" />
+<link rel="stylesheet" href="%[1]swp-content/plugins/goodlayers-core/plugins/style.css?ver=1.3.9" /></head><body></body></html>`, base)
+		case "/wp-content/plugins/goodlayers-core/plugins/style.css":
+			w.Header().Set("Content-Type", "text/css")
+			fmt.Fprint(w, "body{}")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-u", srv.URL, "-e", "none", "--data-dir", t.TempDir()}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit code = %d\n%s\n%s", code, &stdout, &stderr)
+	}
+	out := stdout.String()
+	asset := srv.URL + "/wp-content/plugins/goodlayers-core/plugins/style.css?ver=1.3.9"
+	for _, want := range []string{
+		"goodlayers-core",
+		"Found by: " + asset + ", referenced by " + srv.URL + "/",
+		"Version: 1.3.9 (confidence 40%)",
+		"Version from: ?ver= on the plugin's assets: " + asset + " (weak: plugins and themes do not always set ?ver= to their version; check it)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Location: "+srv.URL+"/wp-content/plugins/goodlayers-core/") {
+		t.Error("the default report should not offer the plugin's folder, which answers 404")
+	}
+}

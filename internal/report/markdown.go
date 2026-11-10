@@ -97,7 +97,14 @@ func WriteMarkdown(w io.Writer, r *scan.Result) error {
 			m.line("- Name: %s", md(t.Name))
 		}
 		m.line("- Version: %s", md(versionText(t.Version)))
-		m.line("- Location: %s", mdURL(t.Location))
+		if src := versionSource(t.Version); src != "" {
+			m.line("- Version from: %s", md(src))
+		}
+		if t.StyleURL != "" {
+			m.line("- Style: %s", mdURL(t.StyleURL))
+		} else if found := foundBy(t.Evidence); found != "" {
+			m.line("- Found by: %s", md(found))
+		}
 		if t.LastUpdated != "" {
 			m.line("- Last updated: %s (on WordPress.org)", md(t.LastUpdated))
 		}
@@ -118,8 +125,11 @@ func WriteMarkdown(w io.Writer, r *scan.Result) error {
 		}
 		m.subheading(title)
 		m.line("- Version: %s", md(versionText(p.Version)))
-		if p.Location != "" {
-			m.line("- Location: %s", mdURL(p.Location))
+		if src := versionSource(p.Version); src != "" {
+			m.line("- Version from: %s", md(src))
+		}
+		if found := foundBy(p.Evidence); found != "" {
+			m.line("- Found by: %s", md(found))
 		}
 		if p.LastUpdated != "" {
 			m.line("- Last updated: %s (on WordPress.org)", md(p.LastUpdated))

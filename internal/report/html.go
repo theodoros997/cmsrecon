@@ -29,20 +29,22 @@ var htmlFuncs = template.FuncMap{
 		}
 		return s
 	},
-	"version":    versionText,
-	"exploits":   exploitCounts,
-	"exploitRow": exploitLine,
-	"possible":   possibleText,
-	"themes":     themeList,
-	"role":       themeRole,
-	"bytes":      formatBytes,
-	"seconds":    formatSeconds,
-	"counts":     countsText,
-	"status":     statusText,
-	"first":      func(n int, ms []*scan.Media) []*scan.Media { return ms[:min(n, len(ms))] },
-	"minus":      func(a, b int) int { return a - b },
-	"kind":       scan.MediaKind,
-	"sources":    sourcesText,
+	"version":     versionText,
+	"exploits":    exploitCounts,
+	"exploitRow":  exploitLine,
+	"possible":    possibleText,
+	"foundBy":     foundBy,
+	"versionFrom": versionSource,
+	"themes":      themeList,
+	"role":        themeRole,
+	"bytes":       formatBytes,
+	"seconds":     formatSeconds,
+	"counts":      countsText,
+	"status":      statusText,
+	"first":       func(n int, ms []*scan.Media) []*scan.Media { return ms[:min(n, len(ms))] },
+	"minus":       func(a, b int) int { return a - b },
+	"kind":        scan.MediaKind,
+	"sources":     sourcesText,
 }
 
 // statusText says how the scan ended, for the reports.
@@ -159,7 +161,7 @@ code { font-size: 13px; background: var(--panel); padding: 0 3px; border-radius:
 
 <h2>Themes</h2>
 {{$r := .}}{{range themes .}}<div class="card"><h3>{{.Slug}} <span class="muted">({{role $r .}})</span></h3>
-<table>{{if .Name}}<tr><th>Name</th><td>{{.Name}}</td></tr>{{end}}<tr><th>Version</th><td>{{version .Version}}</td></tr><tr><th>Location</th><td>{{.Location}}</td></tr>
+<table>{{if .Name}}<tr><th>Name</th><td>{{.Name}}</td></tr>{{end}}<tr><th>Version</th><td>{{version .Version}}</td></tr>{{with versionFrom .Version}}<tr><th>Version from</th><td>{{.}}</td></tr>{{end}}{{if .StyleURL}}<tr><th>Style</th><td>{{.StyleURL}}</td></tr>{{else}}{{with foundBy .Evidence}}<tr><th>Found by</th><td>{{.}}</td></tr>{{end}}{{end}}
 {{if .LastUpdated}}<tr><th>Last updated</th><td>{{.LastUpdated}} (on WordPress.org)</td></tr>{{end}}</table>
 {{range .Warnings}}<p class="warn">{{.}}</p>{{end}}
 {{template "vulns" .Vulnerabilities}}{{if .Possible}}<p class="muted">{{possible .Possible .Version}}</p>{{end}}</div>
@@ -167,7 +169,7 @@ code { font-size: 13px; background: var(--panel); padding: 0 3px; border-radius:
 
 <h2>Plugins ({{len .Plugins}})</h2>
 {{range .Plugins}}<div class="card"><h3>{{.Slug}}{{if .Name}} <span class="muted">({{.Name}})</span>{{end}}</h3>
-<table><tr><th>Version</th><td>{{version .Version}}</td></tr>{{if .Location}}<tr><th>Location</th><td>{{.Location}}</td></tr>{{end}}
+<table><tr><th>Version</th><td>{{version .Version}}</td></tr>{{with versionFrom .Version}}<tr><th>Version from</th><td>{{.}}</td></tr>{{end}}{{with foundBy .Evidence}}<tr><th>Found by</th><td>{{.}}</td></tr>{{end}}
 {{if .LastUpdated}}<tr><th>Last updated</th><td>{{.LastUpdated}} (on WordPress.org)</td></tr>{{end}}<tr><th>Confidence</th><td>{{.Confidence}}%</td></tr></table>
 {{range .Warnings}}<p class="warn">{{.}}</p>{{end}}
 {{template "vulns" .Vulnerabilities}}{{if .Possible}}<p class="muted">{{possible .Possible .Version}}</p>{{end}}
