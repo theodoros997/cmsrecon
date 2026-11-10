@@ -29,7 +29,8 @@ func TestHTMLReport(t *testing.T) {
 	for _, want := range []string{
 		"<!DOCTYPE html>", "<title>WordPress scan: https://example.com/</title>",
 		"Summary", "plugin contact-form-7 5.3.1: Contact Form 7 &lt;= 5.3.1 - Unrestricted File Upload", "public exploit",
-		"Debug log exposed", "CVE-2020-35489", "CVSS 9.8", "fixed in 5.3.2", "1 Metasploit module",
+		"Debug log exposed", "CVE-2020-35489", "CVSS 9.8", "<th>Version from</th><td>readme.txt Stable tag: https://example.com/wp-content/plugins/contact-form-7/readme.txt</td>",
+		"<th>Style</th><td>https://example.com/wp-content/themes/child/style.css</td>", "fixed in 5.3.2", "1 Metasploit module",
 		"child", "main theme", "parent theme", "Possible vulnerabilities: 3 (1 critical)",
 		"Guest Writer", "salaries.xlsx", "Wordfence (2026-10-19)", "2 confirmed, 4 possible",
 	} {
@@ -65,7 +66,8 @@ func TestMarkdownReport(t *testing.T) {
 	for _, want := range []string{
 		"# WordPress scan report", "## Summary", "| **CRITICAL** | plugin contact-form-7 5.3.1: Contact Form 7 \\<= 5.3.1 - Unrestricted File Upload | confirmed · CVE-2020-35489 · **public exploit** |",
 		"| **HIGH** | Debug log exposed | <https://example.com/wp-content/debug.log> |",
-		"### contact-form-7 (Contact Form 7)", "- Location: <https://example.com/wp-content/plugins/contact-form-7/>",
+		"### contact-form-7 (Contact Form 7)", "- Found by: readme.txt: https://example.com/wp-content/plugins/contact-form-7/readme.txt",
+		"- Version from: readme.txt Stable tag: https://example.com/wp-content/plugins/contact-form-7/readme.txt",
 		"<https://www.exploit-db.com/exploits/49294>", "| 1 | admin | Site Admin | 100% |", "## Scan",
 	} {
 		if !strings.Contains(out, want) {

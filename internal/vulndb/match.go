@@ -98,8 +98,12 @@ func MatchAdvisories(advs []*Advisory, d Detected) []Match {
 			m.Verdict = VerdictConfirmed
 		default:
 			m.Verdict = VerdictLikely
-			if m.Note == "" && d.Confidence >= ConfirmedConfidence {
+			switch {
+			case m.Note != "":
+			case d.Confidence >= ConfirmedConfidence:
 				m.Note = "Another detected version candidate is not affected"
+			default:
+				m.Note = fmt.Sprintf("The version (%s) was detected with %d%% confidence only: check it before relying on this", d.Version, d.Confidence)
 			}
 		}
 		out = append(out, m)

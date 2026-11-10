@@ -103,3 +103,18 @@ func TestCVERecordProducts(t *testing.T) {
 		t.Errorf("legacy Patchstack theme URL = %+v", theme)
 	}
 }
+
+// TestWeakVersionNote: a match on a version detected with little
+// confidence is likely, and says to check the version.
+func TestWeakVersionNote(t *testing.T) {
+	a := &Advisory{Kind: "plugin", Slug: "goodlayers-core", Title: "Goodlayers Core <= 2.0.1 - XSS",
+		Sources: []SourceRanges{{Source: SourceWordfence, Affected: []Range{{To: "2.0.1", ToInclusive: true}}}}}
+	ms := MatchAdvisories([]*Advisory{a}, Detected{Version: "1.3.9", Confidence: 40})
+	if len(ms) != 1 || ms[0].Verdict != VerdictLikely || !strings.Contains(ms[0].Note, "1.3.9") || !strings.Contains(ms[0].Note, "40%") {
+		t.Errorf("weak version match = %+v", ms)
+	}
+	ms = MatchAdvisories([]*Advisory{a}, Detected{Version: "1.3.9", Confidence: 80})
+	if len(ms) != 1 || ms[0].Verdict != VerdictConfirmed || ms[0].Note != "" {
+		t.Errorf("strong version match = %+v", ms)
+	}
+}

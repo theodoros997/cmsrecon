@@ -134,7 +134,7 @@ The default User-Agent is `cmsrecon/<version>`, so the scan is easy to find in t
 Each vulnerability has a verdict:
 
 - **confirmed:** the detected version is in the affected range, and the version is certain.
-- **likely:** the version is in the range but less certain, or the sources disagree. Also used when the version is unknown but every release up to the latest is affected, since then any installed version is.
+- **likely:** the version is in the range but less certain, or the sources disagree. Also used when the version is unknown but every release up to the latest is affected, since then any installed version is. A likely vulnerability always carries a note that says why, such as "The version (1.3.9) was detected with 40% confidence only: check it before relying on this".
 - **possible:** the version is unknown, or only a secondary source puts it in the range.
 
 A plugin with no known version "may" be affected by every vulnerability ever published for it, often dozens. Listing them all buries the ones that matter, so the possible ones are summed up in one line per plugin or theme:
@@ -146,6 +146,17 @@ A plugin with no known version "may" be affected by every vulnerability ever pub
 ```
 
 `--possible` lists them in full, in the CLI and in the JSON report. The JSON report always has the summary in `possible_vulnerabilities`.
+
+Each plugin says how it was found and where its version came from, with a URL you can open to check both:
+
+```
+[!] goodlayers-core (confidence 99%)
+    | Found by: https://example.com/wp-content/plugins/goodlayers-core/plugins/style.css?ver=1.3.9, referenced by https://example.com/
+    | Version: 1.3.9 (confidence 40%)
+    | Version from: ?ver= on the plugin's assets: https://example.com/wp-content/plugins/goodlayers-core/plugins/style.css?ver=1.3.9 (weak: plugins and themes do not always set ?ver= to their version; check it)
+```
+
+The plugin's folder itself (`/wp-content/plugins/goodlayers-core/`) is not a page: most servers answer 404 or 403 for it, which is normal and does not mean the plugin is absent. `-v` shows the folder and every signal. A version from the `?ver=` of one file (40%) is the weakest the report shows: a plugin often sets it to its version, but a theme or a caching plugin may set it to something else, so check it (in the plugin's readme or changelog if they are reachable, or with the site's owner) before reporting a likely vulnerability that depends on it.
 
 ### Public exploits and proofs of concept
 
