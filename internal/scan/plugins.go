@@ -115,6 +115,27 @@ func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 	return out
 }
 
+// methodAssetVersion is the evidence of a version read from the ?ver= of
+// a plugin's files.
+const methodAssetVersion = "?ver= on the plugin's assets"
+
+// inOtherPluginsFolder reports whether a file of plugin slug sits in a
+// sub-folder named after another plugin: .../plugins/slug/inc/elementor/x.css.
+func inOtherPluginsFolder(path, slug string, others map[string]bool) bool {
+	lower := strings.ToLower(path)
+	i := strings.Index(lower, "/"+slug+"/")
+	if i < 0 {
+		return false
+	}
+	dirs := strings.Split(lower[i+len(slug)+2:], "/")
+	for _, d := range dirs[:len(dirs)-1] { // the last part is the file
+		if d != slug && others[d] {
+			return true
+		}
+	}
+	return false
+}
+
 // bruteForce requests <dir><slug>/ for the slugs not found yet and adds
 // the ones that exist.
 func (s *Scanner) bruteForce(ctx context.Context, set *componentSet, label string, dir *url.URL, slugs []string) {
@@ -291,6 +312,26 @@ func (s *Scanner) pluginsFromPages(set *componentSet, pages []labelledPage, pref
 			}
 		}
 	}
+	// A file in a sub-folder named after another plugin on the site
+	// (thegem-elements-elementor/inc/elementor/...) belongs to the
+	// integration with that plugin, and plugins load such files with the
+	// other plugin's version (ELEMENTOR_VERSION): its ?ver= is not theirs.
+	others := map[string]bool{}
+	for k := range assets {
+		others[k] = true
+	}
+	for _, c := range set.list() {
+		others[strings.ToLower(c.slug)] = true
+	}
+	for k, urls := range assets {
+		own := urls[:0:0]
+		for _, u := range urls {
+			if !inOtherPluginsFolder(u.Path, k, others) {
+				own = append(own, u)
+			}
+		}
+		assets[k] = own
+	}
 	// A ?ver= that the assets of three plugins or more share is the
 	// WordPress version (hidden elsewhere) or a cache buster, not theirs.
 	shared := map[string]int{}
@@ -315,7 +356,7 @@ func (s *Scanner) pluginsFromPages(set *componentSet, pages []labelledPage, pref
 					break
 				}
 			}
-			set.addVersion(spelling[k], Evidence{Method: "?ver= on the plugin's assets", Mode: mode, URL: example, Value: v, Confidence: assetVersionConfidence(len(paths))})
+			set.addVersion(spelling[k], Evidence{Method: methodAssetVersion, Mode: mode, URL: example, Value: v, Confidence: assetVersionConfidence(len(paths))})
 		}
 	}
 }
