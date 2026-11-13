@@ -19,6 +19,7 @@ import (
 	"github.com/theodoros997/cmsrecon/internal/httpclient"
 	"github.com/theodoros997/cmsrecon/internal/progress"
 	"github.com/theodoros997/cmsrecon/internal/wordlists"
+	"github.com/theodoros997/cmsrecon/internal/wporg"
 )
 
 // Modes recorded in evidence.
@@ -33,6 +34,12 @@ type Scanner struct {
 	// starts, what it is busy with, and its result. It is called from
 	// several goroutines.
 	Steps progress.Reporter
+	// Org asks WordPress.org for plugin checksums. A scan makes its own
+	// unless one is set, which tests do.
+	Org *wporg.Client
+
+	orgOnce sync.Once
+	orgDown atomic.Bool // WordPress.org failed once: it is not asked again
 
 	opts   *cli.ScanOptions
 	client *httpclient.Client
@@ -152,7 +159,7 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 			s.res.Notices = append(s.res.Notices, fmt.Sprintf("The scan stopped after --max-scan-duration %s: the checks still running were cut short, so the results are partial.", s.opts.MaxScanDuration))
 		case errors.Is(cause, errTargetFailing):
 			s.res.Status = StatusBlocked
-			s.res.Notices = append(s.res.Notices, fmt.Sprintf("The scan stopped after %d requests because the target kept failing or refusing them (%s). What was not checked by then is missing, not absent. Scan again later, more slowly (--throttle 1s --threads 1), or from an allowed IP.", s.client.Stats().Requests, s.client.Failing()))
+			s.res.Notices = append(s.res.Notices, fmt.Sprintf("The scan stopped after %d requests because the target kept failing or refusing them, even after slowing down and pausing (%s). The steps that finished before that are complete; what was not checked by then is missing, not absent. Scan again later, more slowly (--throttle 2s), or from an allowed IP.", s.client.Stats().Requests, s.client.Failing()))
 		}
 		if s.res.Stop != nil && s.res.Stop.Code == StopConnectionFailed {
 			s.res.Stop = nil // the request failed because of the interruption
@@ -162,45 +169,68 @@ func (s *Scanner) Run(ctx context.Context, notices []string) *Result {
 	return s.res
 }
 
+// runChecks runs the checks in the order of what they cost and what they
+// are worth. A firewall that starts dropping requests usually does so
+// after many guesses that answered 404, so the checks that read what the
+// site shows come first, and the guesses last:
+//
+//  1. the version, the main theme, the plugins and themes the pages show,
+//     the users, the libraries, and the findings at paths every WordPress
+//     has (xmlrpc.php, robots.txt, the login page);
+//  2. the findings that guess a path (debug.log, backups, exports), and the
+//     media;
+//  3. brute force of plugins and themes, when asked for;
+//  4. what the folders of the plugins and themes found expose, and TimThumb.
+//
+// A scan cut short during a later part keeps what the earlier ones found.
 func (s *Scanner) runChecks(ctx context.Context) {
-	checks := []func(context.Context) []Finding{
-		s.checkHeaders, s.checkRobots, s.checkXMLRPC, s.checkReadme, s.checkDebugLog,
-		s.checkFullPathDisclosure, s.checkBackupDB, s.checkDuplicatorLog, s.checkMultisite,
-		s.checkMuPlugins, s.checkRegistration, s.checkUploadListing, s.checkTmmDBMigrate,
-		s.checkSQLDump, s.checkEmergencyScript, s.checkWPCron, s.checkPHPDisabled,
-		s.checkFantastico, s.checkSearchReplaceDB, s.checkConfigBackups, s.checkDBExports,
+	st := s.steps()
+	quiet := []func(context.Context) []Finding{
+		s.checkHeaders, s.checkSecurityHeaders, s.checkPHPVersion, s.checkDisplayedErrors,
+		s.checkRobots, s.checkXMLRPC, s.checkReadme, s.checkFullPathDisclosure,
+		s.checkMultisite, s.checkRegistration, s.checkUploadListing, s.checkWPCron,
+	}
+	guesses := []func(context.Context) []Finding{
+		s.checkDebugLog, s.checkBackupDB, s.checkDuplicatorLog, s.checkMuPlugins, s.checkTmmDBMigrate,
+		s.checkSQLDump, s.checkEmergencyScript, s.checkPHPDisabled, s.checkFantastico,
+		s.checkSearchReplaceDB, s.checkSensitiveFiles, s.checkConfigBackups, s.checkDBExports,
 		s.checkBackupFolders,
 	}
-	st := s.steps()
-	var wg sync.WaitGroup
 	var checked atomic.Int32
-	st.Start(stepFindings)
-	for _, check := range checks {
-		wg.Go(func() {
-			if f := check(ctx); len(f) > 0 {
-				s.mu.Lock()
-				s.res.InterestingFindings = append(s.res.InterestingFindings, f...)
-				s.mu.Unlock()
-			}
-			if n := int(checked.Add(1)); n < len(checks) {
-				st.Update(stepFindings, fmt.Sprintf("%d/%d checks", n, len(checks)))
-			} else {
-				s.endStep(ctx, stepFindings, s.findingsSummary())
-			}
-		})
+	total := len(quiet) + len(guesses)
+	runFindings := func(wg *sync.WaitGroup, checks []func(context.Context) []Finding) {
+		for _, check := range checks {
+			wg.Go(func() {
+				if f := check(ctx); len(f) > 0 {
+					s.mu.Lock()
+					s.res.InterestingFindings = append(s.res.InterestingFindings, f...)
+					s.mu.Unlock()
+				}
+				st.Update(stepFindings, fmt.Sprintf("%d/%d checks", checked.Add(1), total))
+			})
+		}
 	}
+
+	// Part 1: what the site shows.
+	var wg sync.WaitGroup
+	st.Start(stepFindings)
+	runFindings(&wg, quiet)
+	var v *Version
+	var main *Theme
+	var ps *pluginScan
+	inventory := false
 	// The ?ver= signals of themes and plugins need the core version, and
 	// theme enumeration needs the main theme, so they come after.
 	wg.Go(func() {
 		st.Start(stepVersion)
-		v := s.detectVersion(ctx)
+		v = s.detectVersion(ctx)
 		latest(v, s.data.lists.CoreLatest)
+		s.setResult(func(r *Result) { r.Version = v })
 		s.endStep(ctx, stepVersion, versionSummary(v))
-		var main *Theme
 		var others []*Theme
-		var plugins []*Plugin
 		inv := s.restInventory(ctx)
 		if inv != nil && len(inv.themes) > 0 {
+			inventory = true
 			main, others = s.themesFromInventory(inv)
 		} else {
 			// Its signals are passive: aggressive mode skips it.
@@ -215,54 +245,88 @@ func (s *Scanner) runChecks(ctx context.Context) {
 				s.endStep(ctx, stepMainTheme, mainThemeSummary(main))
 			}
 		}
+		s.setResult(func(r *Result) { r.MainTheme, r.Themes = main, others })
 		var inner sync.WaitGroup
 		inner.Go(func() {
 			st.Start(stepPlugins)
-			plugins = s.detectPlugins(ctx, v)
-			s.endStep(ctx, stepPlugins, countSummary(len(plugins), "found", "none found"))
+			ps = s.discoverPlugins(ctx, v)
+			plugins := s.pluginList(ps)
+			s.setResult(func(r *Result) { r.Plugins = plugins })
+			if !s.wantsPluginBruteForce() {
+				s.endStep(ctx, stepPlugins, countSummary(len(plugins), "found", "none found"))
+			}
 		})
-		if inv == nil || len(inv.themes) == 0 {
+		if !inventory {
 			inner.Go(func() {
 				st.Start(stepThemes)
-				others = s.enumerateThemes(ctx, v, main)
-				s.endStep(ctx, stepThemes, countSummary(len(others), "other themes found", "no other theme found"))
+				themes := s.enumerateThemes(ctx, v, main, false)
+				s.setResult(func(r *Result) { r.Themes = themes })
+				if !s.wantsThemeBruteForce() {
+					s.endStep(ctx, stepThemes, countSummary(len(themes), "other themes found", "no other theme found"))
+				}
 			})
 		}
 		inner.Wait()
-		s.mu.Lock()
-		s.res.Version, s.res.MainTheme, s.res.Themes, s.res.Plugins = v, main, others, plugins
-		s.mu.Unlock()
 	})
 	if s.opts.Enumerate.Users != nil {
 		wg.Go(func() {
 			st.Start(stepUsers)
 			users := s.enumerateUsers(ctx)
-			s.mu.Lock()
-			s.res.Users = users
-			s.mu.Unlock()
+			s.setResult(func(r *Result) { r.Users = users })
 			s.endStep(ctx, stepUsers, countSummary(len(users), "found", "none found"))
 		})
 	}
 	wg.Go(func() {
 		st.Start(stepJS)
 		libs := s.detectJSLibraries(ctx)
-		s.mu.Lock()
-		s.res.JSLibraries = libs
-		s.mu.Unlock()
+		s.setResult(func(r *Result) { r.JSLibraries = libs })
 		s.endStep(ctx, stepJS, countSummary(len(libs), "found", "none found"))
 	})
+	wg.Wait()
+
+	// Part 2: the guesses.
+	runFindings(&wg, guesses)
 	if s.opts.Enumerate.Media != nil && s.aggressive() {
 		wg.Go(func() {
 			st.Start(stepMedia)
 			media := s.enumerateMedia(ctx)
-			s.mu.Lock()
-			s.res.Media = media
-			s.mu.Unlock()
+			s.setResult(func(r *Result) { r.Media = media })
 			s.endStep(ctx, stepMedia, countSummary(len(media), "files found", "no file found"))
 		})
 	}
 	wg.Wait()
-	// These look into the folders of the themes and plugins found.
+	s.endStep(ctx, stepFindings, s.findingsSummary())
+
+	// Part 3: brute force, the noisiest of all.
+	if ps != nil && s.wantsPluginBruteForce() {
+		wg.Go(func() {
+			before := len(s.pluginList(ps))
+			s.bruteForcePlugins(ctx, ps)
+			plugins := s.pluginList(ps)
+			s.setResult(func(r *Result) { r.Plugins = plugins })
+			s.endBruteForce(ctx, stepPlugins, before, countSummary(len(plugins), "found", "none found"))
+		})
+	} else if ps != nil {
+		s.bruteForcePlugins(ctx, ps) // nothing to request: it only explains -e ap without brute force
+	}
+	if !inventory && s.wantsThemeBruteForce() {
+		wg.Go(func() {
+			s.mu.Lock()
+			before := len(s.res.Themes)
+			s.mu.Unlock()
+			if ctx.Err() == nil {
+				themes := s.enumerateThemes(ctx, v, main, true)
+				s.setResult(func(r *Result) { r.Themes = themes })
+				before = len(themes)
+			}
+			s.endBruteForce(ctx, stepThemes, before, countSummary(before, "other themes found", "no other theme found"))
+		})
+	} else if !inventory {
+		s.themeBruteForceNotice()
+	}
+	wg.Wait()
+
+	// Part 4: these look into the folders of the themes and plugins found.
 	if s.aggressive() {
 		st.Start(stepFolders)
 		n := s.checkItems(ctx)
@@ -278,6 +342,23 @@ func (s *Scanner) runChecks(ctx context.Context) {
 	st.Start(stepVulns)
 	s.matchVulnerabilities()
 	st.Done(stepVulns, s.vulnSummary()) // matching needs no request: it always finishes
+}
+
+// endBruteForce ends a step whose discovery finished earlier: when the
+// scan stopped during the brute force, what discovery found still stands.
+func (s *Scanner) endBruteForce(ctx context.Context, step string, found int, result string) {
+	if ctx.Err() == nil {
+		s.steps().Done(step, result)
+		return
+	}
+	s.steps().Fail(step, fmt.Sprintf("%d found from what the site shows; the brute force was cut short", found))
+}
+
+// setResult changes the result under its lock.
+func (s *Scanner) setResult(f func(*Result)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f(s.res)
 }
 
 func (s *Scanner) finish(start time.Time) {
@@ -300,6 +381,16 @@ func (s *Scanner) finish(start time.Time) {
 		Retries:        st.Retries,
 		Blocked:        st.Blocked,
 		FailedRequests: r.Stats.FailedRequests,
+		NotFound:       st.NotFound,
+		Slowdowns:      st.Slowdowns,
+		Pauses:         st.Pauses,
+	}
+	if st.Slowdowns > 0 && r.Status != StatusBlocked {
+		paused := ""
+		if st.Pauses > 0 {
+			paused = fmt.Sprintf(" and paused %s", times(st.Pauses))
+		}
+		r.Notices = append(r.Notices, fmt.Sprintf("The scan slowed down%s because the target started to refuse or drop requests (rate limits, overloads or timeouts), then went on, one request at a time. It took longer, but nothing was skipped.", paused))
 	}
 	if st.Blocked > 0 && r.Status != StatusBlocked {
 		of := ""
@@ -311,8 +402,21 @@ func (s *Scanner) finish(start time.Time) {
 	r.normalize()
 }
 
+func times(n int64) string {
+	if n == 1 {
+		return "once"
+	}
+	return fmt.Sprintf("%d times", n)
+}
+
 func (s *Scanner) passive() bool    { return s.opts.DetectionMode != cli.ModeAggressive }
 func (s *Scanner) aggressive() bool { return s.opts.DetectionMode != cli.ModePassive }
+
+// thorough reports whether the scan trades requests for coverage
+// (--aggressive): the full lists of names to guess instead of the likeliest
+// ones, and every way to read a version instead of stopping at the first
+// good one.
+func (s *Scanner) thorough() bool { return s.opts.Thorough && s.aggressive() }
 
 // get fetches u once per scan; later calls for the same URL share the
 // response. Failed requests are recorded in the result and return nil.

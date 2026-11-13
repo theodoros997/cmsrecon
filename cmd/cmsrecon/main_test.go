@@ -54,11 +54,21 @@ func TestRun(t *testing.T) {
 		{"additive enumeration", []string{"-u", "example.com", "-e", "+tt,+m1-5", "--dry-run"}, exitOK,
 			[]string{"Timthumbs:       yes", "attachment IDs 1-5", "Config backups:  yes", "author IDs 1-10"}},
 		{"dry run estimate and data", []string{"-u", "example.com", "--dry-run", "--data-dir", os.TempDir() + "/cmsrecon-none"}, exitOK,
-			[]string{"Requests:        about ", "plus about 6 for each plugin and theme found", "(empty: run \"cmsrecon update\" or add --update)", "User-Agent:      cmsrecon/"}},
+			[]string{"Requests:        about ", "plus about 4 for each plugin and theme found", "at most 10 requests per second", "WordPress.org:", "(empty: run \"cmsrecon update\" or add --update)", "User-Agent:      cmsrecon/"}},
 		{"dry run ap without brute force", []string{"-u", "example.com", "-e", "ap", "--dry-run"}, exitOK,
 			[]string{"no brute force: -e ap only chooses the list to brute-force, which --plugins-detection passive does not do (use mixed)"}},
 		{"dry run vhost", []string{"-u", "https://10.0.0.5/", "--vhost", "www.example.com", "--login-uri", "/door/", "--dry-run"}, exitOK,
 			[]string{"Target:          https://www.example.com/", "Connect to:      10.0.0.5 for www.example.com", "Login page:      /door/"}},
+		{"aggressive preset", []string{"-u", "example.com", "--aggressive", "--offline", "--dry-run", "--data-dir", os.TempDir() + "/cmsrecon-none"}, exitOK,
+			[]string{"mixed, --aggressive: every check and the full lists", "then brute force of popular plugins", "then brute force of popular themes",
+				"up to 25 more pages", "author IDs 1-25", "Timthumbs:       yes", "attachment IDs 1-100"}},
+		{"aggressive keeps the options given", []string{"-u", "example.com", "--aggressive", "-e", "u1-3", "--crawl", "2", "--plugins-detection", "passive", "--dry-run"}, exitOK,
+			[]string{"author IDs 1-3", "up to 2 more pages", "Plugins:         found on the site\n", "Config backups:  no"}},
+		{"aggressive and stealthy", []string{"-u", "example.com", "--aggressive", "--stealthy", "--dry-run"}, exitUsage, nil},
+		{"aggressive and passive", []string{"-u", "example.com", "--aggressive", "--detection-mode", "passive", "--dry-run"}, exitUsage, nil},
+		{"rate and throttle", []string{"-u", "example.com", "--rate", "2.5", "--dry-run"}, exitOK, []string{"at most 2.5 requests per second"}},
+		{"no rate limit", []string{"-u", "example.com", "--rate", "0", "--offline", "--dry-run"}, exitOK, []string{"Concurrency:     5 threads; slower by itself"}},
+		{"negative rate", []string{"-u", "example.com", "--rate", "-1", "--dry-run"}, exitUsage, nil},
 		{"report help", []string{"report", "-h"}, exitOK, []string{"cmsrecon report [options] REPORT.json"}},
 		{"report without a file", []string{"report"}, exitUsage, nil},
 		{"target that is an option", []string{"scan", "--", "-e"}, exitUsage, nil},
@@ -305,7 +315,7 @@ func TestPluginEvidenceIsVerifiable(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"-u", srv.URL, "-e", "none", "--data-dir", t.TempDir()}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"-u", srv.URL, "-e", "none", "--offline", "--data-dir", t.TempDir()}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit code = %d\n%s\n%s", code, &stdout, &stderr)
 	}
 	out := stdout.String()

@@ -184,3 +184,39 @@ func TestParseReport(t *testing.T) {
 		}
 	}
 }
+
+func TestAggressivePresetAndPacing(t *testing.T) {
+	o, err := ParseScan([]string{"example.com"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Rate != DefaultRate || o.Thorough || o.Offline || o.CrawlPages != DefaultCrawlPages {
+		t.Errorf("defaults = rate %v, aggressive %v, offline %v", o.Rate, o.Thorough, o.Offline)
+	}
+
+	o, err = ParseScan([]string{"example.com", "--aggressive"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := o.Enumerate
+	if !o.Thorough || o.PluginsDetection != ModeMixed || o.ThemesDetection != ModeMixed || o.CrawlPages != AggressiveCrawlPages ||
+		!e.Timthumbs || e.Media == nil || e.Users == nil || e.Users.To != 25 || !e.ConfigBackups || o.EnumerateSpec != AggressiveEnumeration {
+		t.Errorf("--aggressive = %+v, enumerate %+v", o, e)
+	}
+	if o.DetectionMode != ModeMixed {
+		t.Errorf("--aggressive keeps the passive checks: detection mode %s", o.DetectionMode)
+	}
+
+	// --throttle spaces the requests itself: --rate does not add to it.
+	o, err = ParseScan([]string{"example.com", "--throttle", "300", "--offline"}, io.Discard)
+	if err != nil || o.Rate != 0 || o.Threads != 1 || !o.Offline {
+		t.Errorf("--throttle = rate %v, threads %d, offline %v, %v", o.Rate, o.Threads, o.Offline, err)
+	}
+
+	// The preset can come from the config file too.
+	cfg := writeConfig(t, "aggressive = true\nrate = 4\n")
+	o, err = ParseScan([]string{"--config", cfg, "example.com", "-e", "u"}, io.Discard)
+	if err != nil || !o.Thorough || o.Rate != 4 || o.Enumerate.ConfigBackups || o.PluginsDetection != ModeMixed {
+		t.Errorf("config file preset = %+v, %v", o, err)
+	}
+}

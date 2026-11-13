@@ -9,6 +9,10 @@ import (
 // DefaultEnumeration is used when -e/--enumerate is not given.
 const DefaultEnumeration = "vp,vt,cb,dbe,bf,u"
 
+// AggressiveEnumeration is what --aggressive enumerates unless -e says
+// otherwise: everything, with more users.
+const AggressiveEnumeration = "vp,vt,cb,dbe,bf,tt,u1-25,m"
+
 // DefaultUserIDs is the author ID range checked by a bare "u".
 var DefaultUserIDs = IDRange{From: 1, To: 10}
 

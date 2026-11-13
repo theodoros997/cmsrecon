@@ -60,6 +60,8 @@ type ScanOptions struct {
 	PluginsDir       string   // --wp-plugins-dir
 	LoginURI         string   // --login-uri: the login page, when a plugin moved it
 	EnumerateSpec    string   // -e as given, for the report
+	Thorough         bool     // --aggressive: every check and the full lists, whatever the number of requests
+	Offline          bool     // only talk to the target: no question to WordPress.org during the scan
 	Force            bool
 	FollowRedirect   bool
 	Scope            []string
@@ -73,6 +75,7 @@ type ScanOptions struct {
 	Proxy           *url.URL
 	Threads         int
 	Throttle        time.Duration
+	Rate            float64 // most requests per second; 0 for no limit
 	Timeout         time.Duration
 	Insecure        bool
 	MaxScanDuration time.Duration     // stop the scan after this long; 0 for no limit
@@ -127,6 +130,8 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.StringVar(&o.PluginsDir, "wp-plugins-dir", "", "")
 	fs.StringVar(&o.LoginURI, "login-uri", "", "")
 	fs.BoolVar(&stealthy, "stealthy", false, "")
+	fs.BoolVar(&o.Thorough, "aggressive", false, "")
+	fs.BoolVar(&o.Offline, "offline", false, "")
 
 	fs.StringVar(&o.UserAgent, "user-agent", "", "")
 	fs.BoolVar(&o.RandomUserAgent, "random-user-agent", false, "")
@@ -141,6 +146,7 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	fs.IntVar(&o.Threads, "threads", 5, "")
 	fs.IntVar(&o.Threads, "max-threads", 5, "") // WPScan's name
 	fs.Var(&throttle, "throttle", "")
+	fs.Float64Var(&o.Rate, "rate", DefaultRate, "")
 	fs.Var(&timeout, "timeout", "")
 	fs.Var(&timeout, "request-timeout", "") // WPScan's name
 	fs.BoolVar(&o.Insecure, "insecure", false, "")
@@ -215,6 +221,27 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	if len(o.Resolve) > 0 && proxy != "" {
 		return nil, errors.New("--resolve and --vhost choose the address to connect to, which a --proxy decides instead: use one or the other")
 	}
+	// --aggressive is a preset: it changes the defaults of the options
+	// the user did not give.
+	if o.Thorough {
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		if stealthy || (given["detection-mode"] && strings.EqualFold(mode, string(ModePassive))) {
+			return nil, errors.New("--aggressive sends every request it can: it cannot go with --stealthy or --detection-mode passive")
+		}
+		if !given["e"] && !given["enumerate"] {
+			enumerate = AggressiveEnumeration
+		}
+		if !given["plugins-detection"] {
+			pluginsMode = string(ModeMixed)
+		}
+		if !given["themes-detection"] {
+			themesMode = string(ModeMixed)
+		}
+		if !given["crawl"] {
+			o.CrawlPages = AggressiveCrawlPages
+		}
+	}
 	o.EnumerateSpec = enumerate
 	if o.Enumerate, err = ParseEnumeration(enumerate); err != nil {
 		return nil, err
@@ -282,7 +309,11 @@ func ParseScan(args []string, out io.Writer) (*ScanOptions, error) {
 	if o.Throttle < 0 {
 		return nil, errors.New("--throttle must not be negative")
 	}
+	if o.Rate < 0 {
+		return nil, errors.New("--rate must not be negative (0 removes the limit)")
+	}
 	if o.Throttle > 0 {
+		o.Rate = 0 // --throttle already spaces the requests
 		o.Threads = 1
 	}
 	if o.Timeout <= 0 {
@@ -387,7 +418,13 @@ func parseMaxDuration(v string) (time.Duration, error) {
 // Crawl limits: how many extra pages discovery reads by default, at most.
 const (
 	DefaultCrawlPages = 10
-	MaxCrawlPages     = 100
+	// AggressiveCrawlPages is how many pages --aggressive reads.
+	AggressiveCrawlPages = 25
+	// DefaultRate is the most requests per second a scan sends unless
+	// --rate or --throttle says otherwise: under the limits most sites
+	// set, and a default scan still takes well under a minute.
+	DefaultRate   = 10
+	MaxCrawlPages = 100
 )
 
 func parseMode(flagName, s string) (DetectionMode, error) {
@@ -639,6 +676,16 @@ Detection:
       --login-uri PATH        The login page, when a plugin moved it (e.g. /my-login/)
       --stealthy              A browser User-Agent and passive detection: only the pages a
                               visitor's browser would load (as WPScan's --stealthy)
+      --aggressive            The most complete scan, whatever the number of requests:
+                              -e vp,vt,cb,dbe,bf,tt,u1-25,m, brute force of the plugins
+                              and themes with known vulnerabilities, the full lists of
+                              backup and sensitive file names, every way to read a
+                              version, and 25 crawled pages. Options you give still win.
+                              (--detection-mode aggressive is something else: WPScan's
+                              mode that only skips the passive checks.)
+      --offline               Only talk to the target. Without it, a plugin whose version
+                              stays uncertain is compared with the checksums of its
+                              releases on WordPress.org (only its name is sent there)
 
 HTTP:
       --user-agent UA         User-Agent to send
@@ -648,6 +695,9 @@ HTTP:
       --http-auth USER:PASS   HTTP Basic authentication
       --proxy URL             http, https, socks5 or socks5h proxy, e.g. http://127.0.0.1:8080
   -t, --threads N             Concurrent requests (default 5)
+      --rate N                At most N requests per second (default 10; 0 for no limit).
+                              The scan also slows down by itself when the site starts to
+                              refuse or drop requests, and pauses before giving up
       --throttle DURATION     Wait between requests, e.g. 500ms (forces --threads 1)
       --timeout DURATION      Per-request timeout (default 60s)
       --insecure              Skip TLS certificate verification

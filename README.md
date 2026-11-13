@@ -45,6 +45,7 @@ cmsrecon scan https://example.com -o report.html                      # one self
 cmsrecon -u https://example.com --plugins-detection mixed -e vp,vt   # also brute-force plugin folders
 cmsrecon -u https://example.com --plugins-list akismet,elementor      # also check these plugins, and no others
 cmsrecon -u https://example.com --stealthy                            # browser User-Agent, passive detection
+cmsrecon -u https://example.com --aggressive                          # every check and the full lists
 cmsrecon -u https://example.com --possible                            # list every possible vulnerability
 cmsrecon -u https://example.com -e +tt,+m                             # the default list, plus TimThumbs and uploaded files
 cmsrecon -u https://10.0.0.5/ --vhost www.example.com                 # scan www.example.com on that server
@@ -55,6 +56,25 @@ cmsrecon report report.json -o report.md                              # render a
 cmsrecon scan -h
 cmsrecon update -h
 ```
+
+### Choosing a scan
+
+| Scan | Command | Requests | What it is for |
+|---|---|---|---|
+| Quiet look | `--stealthy` | about 5 | Only the pages a visitor's browser loads: the version, the theme and the plugins the pages show, with their vulnerabilities |
+| Standard | no option | about 120, plus 4 per plugin and theme found | Everything a site shows, each version checked where it is uncertain, the likeliest leftovers (backups, exports, `.git`, `.env`), users |
+| Aggressive | `--aggressive` | thousands | Everything: brute force of the plugins and themes with known vulnerabilities, the full lists of names, every way to read a version, TimThumb, media, more users and pages |
+
+The standard scan is built to find the most with the fewest requests:
+
+- **What the site shows comes first, the guesses last.** A firewall that bans a scanner does it after the guesses that answer 404; by then the version, the theme, the plugins and the users are already found, so a scan that gets blocked keeps them.
+- **It stops asking once it knows.** The ways to read a version are tried from the cheapest to the dearest, and the scan stops at the first that settles it. A site that shows its WordPress version in its feed costs one request for it.
+- **It paces itself.** At most 10 requests per second (`--rate`), and at the first rate limit, overload or timeout it sends one request at a time, further apart, then speeds up again. After several bad answers in a row it pauses, twice, before giving up (exit code 6).
+- **It tries the likeliest names only** (14 copies of `wp-config.php` instead of 38, for example); `--aggressive` tries them all.
+
+The report's last line says how many requests answered "not found": that is the part of a scan a site's logs show as probing. `--dry-run` shows the plan and the estimate before anything is sent.
+
+`--aggressive` trades all of that for coverage. It will be noticed, it can get your address blocked, and on a small host it can slow the site down: use it with the owner's agreement, and add `--rate 5` or `--throttle 500` to be gentler. It is a preset, so an option you give with it wins (`--aggressive -e vp,u` keeps your list). It is not `--detection-mode aggressive`, which keeps WPScan's meaning: only the passive checks are skipped.
 
 `-e` replaces the default list (`vp,vt,cb,dbe,bf,u`); items that start with `+` add to it instead. WPScan's option names work too (`--url`, `--max-threads`, `--request-timeout`, `--disable-tls-checks`, `--rua`, `--cookie-string`, `--headers`), and `--throttle 500` and `--timeout 30` take WPScan's units (milliseconds and seconds).
 
@@ -156,7 +176,9 @@ Each plugin says how it was found and where its version came from, with a URL yo
     | Version from: ?ver= on the plugin's assets: https://example.com/wp-content/plugins/goodlayers-core/plugins/style.css?ver=1.3.9 (weak: plugins and themes do not always set ?ver= to their version; check it)
 ```
 
-The plugin's folder itself (`/wp-content/plugins/goodlayers-core/`) is not a page: most servers answer 404 or 403 for it, which is normal and does not mean the plugin is absent. `-v` shows the folder and every signal. `?ver=` is whatever number the plugin passed when it loaded the file, for CSS and JavaScript alike. A plugin that passes none gets the WordPress version (`?ver=7.1.4` on a 7.1.4 site), and a file of an integration with another plugin, such as `thegem-elements-elementor/inc/elementor/…`, usually carries that plugin's version (Elementor's); cmsrecon leaves both out. The same value on several of the plugin's own files is the best `?ver=` evidence, a meta generator tag, readme or changelog is better still, and `--wp-auth` gives the exact version. A version from the `?ver=` of one file (40%) is the weakest the report shows: a plugin often sets it to its version, but a theme or a caching plugin may set it to something else, so check it (in the plugin's readme or changelog if they are reachable, or with the site's owner) before reporting a likely vulnerability that depends on it.
+The plugin's folder itself (`/wp-content/plugins/goodlayers-core/`) is not a page: most servers answer 404 or 403 for it, which is normal and does not mean the plugin is absent. `-v` shows the folder and every signal. The surest ways to know a plugin's version, strongest first: `--wp-auth` (the exact list from the site itself); the hashes of its files against WordPress.org's checksums ("File hashes", 95%: the files are those of that release, whatever any text says); its readme's stable tag or a tag the plugin prints itself (80%); the version in the data it passes to its script (60%); its changelog, a file banner, its translation template (50-60%); and last `?ver=`.
+
+`?ver=` is whatever number the plugin passed when it loaded the file, for CSS and JavaScript alike. A plugin that passes none gets the WordPress version (`?ver=7.1.4` on a 7.1.4 site), and a file of an integration with another plugin, such as `thegem-elements-elementor/inc/elementor/…`, usually carries that plugin's version (Elementor's); cmsrecon leaves both out. The same value on several of the plugin's own files is the best `?ver=` evidence, a meta generator tag, readme or changelog is better still, and `--wp-auth` gives the exact version. A version from the `?ver=` of one file (40%) is the weakest the report shows: a plugin often sets it to its version, but a theme or a caching plugin may set it to something else, so check it (in the plugin's readme or changelog if they are reachable, or with the site's owner) before reporting a likely vulnerability that depends on it.
 
 ### Public exploits and proofs of concept
 
@@ -198,8 +220,9 @@ These are links only: cmsrecon never downloads or runs exploit code. GitHub repo
 ## What it checks
 
 - **Pre-flight:** reachability, redirects, WordPress detection, unfinished installs
-- **Interesting findings:** exposed logs, dumps, backup folders, readme, directory listings, XML-RPC, open registration, multisite and more
-- **WordPress core version** from feeds, meta tags, assets, `readme.html` and the hashes of its static files (compared with WordPress.org's checksums of every release since 3.0; a handful of requests)
+- **Interesting findings:** exposed logs, dumps, backup folders, readme, directory listings, XML-RPC, open registration, multisite, a Git repository, an environment file, a `phpinfo()` page, a PHP error log, the database repair page, PHP errors shown to visitors, end-of-life PHP, missing security headers and more
+- **WordPress core version** from feeds, meta tags, assets, the emoji settings, `readme.html`, `wp-links-opml.php`, the install page and the hashes of its static files (compared with WordPress.org's checksums of every release since 3.0), cheapest first, stopping once the version is settled
+- **Plugin versions** from readmes, changelogs, the data plugins pass to their scripts, file banners, translation templates and, for every plugin WordPress.org hosts, the hashes of its files against WordPress.org's checksums of each release
 - **Themes and plugins:** discovery from a small crawl, sitemaps, REST API namespaces, 160 passive signatures (130 plugins) and directory listings, with optional brute force; versions from readmes, changelogs, file banners, `style.css` and `?ver=`, whether each is outdated or abandoned, and whether its folder lists files or exposes an error log
 - **JavaScript libraries:** jQuery, Bootstrap, Lodash, Moment and 60 more, from script URLs and version banners
 - **Users:** REST API, oEmbed, feeds, sitemaps and author IDs
@@ -239,6 +262,8 @@ The data directory holds about 10 to 25 MB once everything is downloaded; `cmsre
 | Public exploits (`exploits`) | About 30 MB | 1.3 MB (measured) | Every update |
 | Core checksums (`corehashes`) | The first time several hundred small requests; then one per new release | A few MB | New releases only |
 
+During a scan, a plugin whose version stays uncertain is compared with the checksums WordPress.org publishes for each of its releases. Only the plugin's name is sent to WordPress.org, never anything about the target, through `--proxy` when one is set; the answers (a few KB per release) are cached in `plugin-checksums/` in the data directory, so each is asked once. `--offline` turns this off: the scan then talks to the target only.
+
 The figures marked measured come from a real update; the others are estimates, and the update's own output gives the real ones. To save bandwidth, leave the CVE List out once you have a Wordfence key, since it is then only a cross-check: `cmsrecon update --sources wordfence,wporg,retirejs,exploits,corehashes`. Deleting the data directory is safe: the next update downloads everything again.
 
 ## Roadmap
@@ -263,8 +288,10 @@ The figures marked measured come from a real update; the others are estimates, a
 - [x] CLI and JSON reports
 - [x] HTML and Markdown reports, `cmsrecon report` (moved up from v1.1)
 - [x] Config file, `--resolve` and `--vhost`, `--log-requests`, WPScan option names
+- [x] Quiet-first scan order, `--rate`, automatic slowdown and pauses, `--aggressive`
+- [x] Plugin versions from WordPress.org's checksums, script data and translation templates
 
-**v1.1:** plugin and theme hash fingerprinting, closed-plugin detection, SARIF reports.
+**v1.1:** theme hash fingerprinting, closed-plugin detection, SARIF reports.
 
 ## Not affiliated with WPScan
 

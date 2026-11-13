@@ -40,10 +40,13 @@ const (
 )
 
 var findingOrder = []string{
-	idUnfinishedInstall, idHeaders, idRobots, idXMLRPC, idReadme, idDebugLog, idFullPath,
+	idUnfinishedInstall, idHeaders, idSecurityHeaders, idPHPEndOfLife, idRobots, idXMLRPC, idReadme,
+	idDebugLog, idDisplayedErrors, idFullPath,
 	idBackupDB, idDuplicatorLog, idMultisite, idMuPlugins, idRegistration, idUploadListing,
 	idTmmDBMigrate, idUploadSQLDump, idEmergencyScript, idWPCron, idPHPDisabled, idFantastico,
-	idSearchReplaceDB, idConfigBackup, idDBExport, idBackupFolder,
+	idSearchReplaceDB, idGitRepository, idSVNRepository, idEnvFile, idDeployConfig, idHtpasswd,
+	idPHPInfo, idPHPErrorLog, idDBRepair, idAdminer, idDSStore, idSiteArchive,
+	idConfigBackup, idDBExport, idBackupFolder,
 }
 
 func findingRank(id string) int {

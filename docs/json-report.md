@@ -36,7 +36,7 @@ Lists are always arrays (`[]` when empty), never `null`. Objects documented as "
 | `scan_options` | [ScanOptions](#scanoptions) | How the scan was run |
 | `notices` | string list | Things the user should know, e.g. missing or stale vulnerability data, or a list that replaced another |
 | `errors` | list | Requests that failed (`url`, `error`). A failed request does not stop the scan; the check that needed it reports nothing |
-| `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead), `elapsed_seconds`, `retries` (requests sent again after a network error, a 429 or a 502-504), `blocked` (answers that were a rate limit, an overload or a firewall block page) and `failed_requests` (`errors` lists the first 100) |
+| `stats` | object | `requests`, `bytes_sent`, `bytes_received` (measured on the network connections, so including headers, TLS and proxy overhead), `elapsed_seconds`, `retries` (requests sent again after a network error, a 429 or a 502-504), `blocked` (answers that were a rate limit, an overload or a firewall block page), `failed_requests` (`errors` lists the first 100), `not_found` (answers that were 404 or 410: the part of the scan a site's logs show as probing), `slowdowns` (times the scan slowed down because the target struggled) and `pauses` (pauses it took after several bad answers in a row) |
 
 ## Target
 
@@ -115,6 +115,17 @@ One signal behind a finding, version or theme.
 | `php-disabled` | high | `wp_version` (string, from the leaked `version.php`) |
 | `fantastico-fileslist` | medium | |
 | `search-replace-db2` | high | |
+| `security-headers` | info | `missing` (string list: the header names) |
+| `php-end-of-life` | medium | `version`, `branch`, `end_of_life` (strings; the date security support ended) |
+| `displayed-errors` | medium | |
+| `git-repository` | high | |
+| `env-file` | high; critical when a name looks like a secret. The names are in `entries`; values are never reported | |
+| `phpinfo` | medium | |
+| `php-error-log` | medium | |
+| `db-repair-page` | medium | |
+| `svn-repository`, `htpasswd`, `deploy-config`, `site-archive` | high (`--aggressive` only) | |
+| `adminer` | medium (`--aggressive` only) | |
+| `ds-store` | low (`--aggressive` only) | |
 | `config-backup` | critical when it defines `DB_PASSWORD`, high otherwise | `constants` (string list: the WordPress constants the copy defines; their values are never reported). One finding per file |
 | `db-export` | high for SQL, medium for an archive | One finding per file |
 | `backup-folder` | high; low for an empty listing | One finding per folder |
@@ -275,6 +286,9 @@ The options the scan ran with, for a report's method section. Secrets are never 
 | `resolve` | object | Host name to the address connected to (`--resolve`, `--vhost`); omitted when not given |
 | `threads` | integer | Concurrent requests |
 | `throttle`, `timeout`, `max_scan_duration` | string | Go durations, e.g. `500ms`, `1m0s`; `throttle` and `max_scan_duration` are omitted when not set |
+| `rate` | number | Most requests per second (`--rate`); omitted when there is no limit |
+| `aggressive` | boolean | `--aggressive`: every check and the full lists |
+| `offline` | boolean | `--offline`: WordPress.org was not asked for plugin checksums |
 | `proxy`, `http_auth`, `wp_auth` | boolean | Whether a proxy, HTTP authentication or an Application Password was used |
 | `config_file` | string | The config file whose defaults were applied; omitted when none |
 
@@ -434,10 +448,14 @@ Abridged output of a mixed-mode scan:
   },
   "scan_options": {
     "enumerate": "vp,vt,cb,dbe,bf,u", "detection_mode": "mixed", "plugins_detection": "passive", "themes_detection": "passive",
-    "crawl_pages": 10, "threads": 5, "timeout": "1m0s", "proxy": false, "http_auth": false, "wp_auth": false
+    "crawl_pages": 10, "threads": 5, "rate": 10, "aggressive": false, "offline": false, "timeout": "1m0s",
+    "proxy": false, "http_auth": false, "wp_auth": false
   },
   "notices": [],
   "errors": [],
-  "stats": { "requests": 41, "bytes_sent": 10240, "bytes_received": 352000, "elapsed_seconds": 3.912 }
+  "stats": {
+    "requests": 41, "bytes_sent": 10240, "bytes_received": 352000, "elapsed_seconds": 3.912,
+    "retries": 0, "blocked": 0, "failed_requests": 0, "not_found": 9, "slowdowns": 0, "pauses": 0
+  }
 }
 ```

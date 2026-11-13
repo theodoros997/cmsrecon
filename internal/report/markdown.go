@@ -232,7 +232,13 @@ func WriteMarkdown(w io.Writer, r *scan.Result) error {
 	if r.Stats.Blocked > 0 {
 		req += fmt.Sprintf("; %d refused (rate limit, firewall)", r.Stats.Blocked)
 	}
-	m.line("- Requests: %s", req)
+	if r.Stats.NotFound > 0 {
+		req += fmt.Sprintf("; %d answered \"not found\"", r.Stats.NotFound)
+	}
+	if r.Stats.Slowdowns > 0 {
+		req += "; the scan slowed down for the site"
+	}
+	m.line("- Requests: %s", md(req))
 	m.line("- User-Agent: %s", md(r.Tool.UserAgent))
 	m.line("- Vulnerability data: %s", md(sourcesText(r.VulnerabilityData)))
 	m.line("- Vulnerabilities: %s", countsText(r.VulnerabilityCounts))

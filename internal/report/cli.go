@@ -78,6 +78,16 @@ func (p *printer) heading(s string) {
 	p.printf("\n%s\n", p.style(bold, s))
 }
 
+// requestsText counts the requests, and those that answered "not found":
+// the part of a scan that a site's logs show as probing.
+func requestsText(st scan.Stats) string {
+	s := plural(int(st.Requests), "request")
+	if st.NotFound > 0 {
+		s += fmt.Sprintf(" (%d answered \"not found\")", st.NotFound)
+	}
+	return s
+}
+
 // WriteCLI writes a human-readable report.
 func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 	p := &printer{w: w, o: o}
@@ -167,7 +177,7 @@ func WriteCLI(w io.Writer, r *scan.Result, o Options) error {
 		p.bad("Scan stopped: the target kept failing or refusing requests, so the results above are partial (see the notices)")
 	}
 	p.good("Finished in %s: %s, %s sent, %s received",
-		formatSeconds(r.Stats.ElapsedSeconds), plural(int(r.Stats.Requests), "request"),
+		formatSeconds(r.Stats.ElapsedSeconds), requestsText(r.Stats),
 		formatBytes(r.Stats.BytesSent), formatBytes(r.Stats.BytesReceived))
 	return p.err
 }

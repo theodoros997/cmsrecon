@@ -21,6 +21,16 @@ type page struct {
 	bodyClasses []string
 	urls        []*url.URL // every http(s) URL the page references, resolved and deduplicated
 	anchors     []*url.URL // <a href> links, in page order
+	scripts     []pageScript
+}
+
+// pageScript is a <script> with an id. WordPress prints a script it
+// enqueues as id="<handle>-js" and the data the plugin passes to it as
+// inline scripts id="<handle>-js-extra", "-js-before" or "-js-after".
+type pageScript struct {
+	id     string
+	src    *url.URL // nil for an inline script
+	inline string
 }
 
 type pageLink struct {
@@ -35,6 +45,9 @@ var urlAttrs = map[string]bool{
 	"data-src": true, "data-href": true, "data-lazy-src": true,
 	"srcset": true, "data-srcset": true, "content": true,
 }
+
+// maxInlineScript is the largest inline script kept for its data.
+const maxInlineScript = 256 << 10
 
 var (
 	// Absolute and protocol-relative URLs anywhere in the page, including
@@ -69,11 +82,20 @@ func parsePage(resp *httpclient.Response) *page {
 	}
 
 	z := xhtml.NewTokenizer(bytes.NewReader(resp.Body))
+	inlineID := "" // the id of the inline script whose text comes next
 	for {
 		tt := z.Next()
 		if tt == xhtml.ErrorToken {
 			break
 		}
+		if tt == xhtml.TextToken && inlineID != "" {
+			if text := z.Text(); len(text) <= maxInlineScript {
+				p.scripts = append(p.scripts, pageScript{id: inlineID, inline: string(text)})
+			}
+			inlineID = ""
+			continue
+		}
+		inlineID = ""
 		if tt != xhtml.StartTagToken && tt != xhtml.SelfClosingTagToken {
 			continue
 		}
@@ -83,6 +105,17 @@ func parsePage(resp *httpclient.Response) *page {
 			attrs[strings.ToLower(a.Key)] = a.Val
 		}
 		switch t.Data {
+		case "script":
+			id := attrs["id"]
+			switch src := strings.TrimSpace(attrs["src"]); {
+			case id == "":
+			case src == "":
+				inlineID = id
+			default:
+				if u, err := resp.URL.Parse(src); err == nil {
+					p.scripts = append(p.scripts, pageScript{id: id, src: u})
+				}
+			}
 		case "meta":
 			if strings.EqualFold(attrs["name"], "generator") {
 				p.generators = append(p.generators, strings.TrimSpace(attrs["content"]))

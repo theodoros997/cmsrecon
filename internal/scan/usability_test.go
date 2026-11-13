@@ -16,19 +16,21 @@ import (
 // TestPlanEstimate keeps the --dry-run estimate close to what a scan of a
 // site with nothing to find really sends.
 func TestPlanEstimate(t *testing.T) {
-	for _, spec := range []string{"vp,vt", "vp,vt,cb,dbe,bf,u", "u1-30,m1-20", "tt,cb", "none"} {
+	for _, spec := range []string{"vp,vt", "vp,vt,cb,dbe,bf,u", "u1-30,m1-20", "tt,cb", "none", cli.AggressiveEnumeration} {
 		for _, mode := range []cli.DetectionMode{cli.ModeMixed, cli.ModePassive} {
-			f := newFakeWP(t).addBaseSite()
-			o := options(f.URL(), mode)
-			e, err := cli.ParseEnumeration(spec)
-			if err != nil {
-				t.Fatal(err)
-			}
-			o.Enumerate = e
-			plan := PlanScan(o)
-			got := int(runScan(t, o).Stats.Requests)
-			if d := plan.Requests - got; d < -got/10-3 || d > got/10+3 {
-				t.Errorf("-e %s, %s: estimate %d, the scan sent %d", spec, mode, plan.Requests, got)
+			for _, thorough := range []bool{false, true} {
+				f := newFakeWP(t).addBaseSite()
+				o := options(f.URL(), mode)
+				e, err := cli.ParseEnumeration(spec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				o.Enumerate, o.Thorough = e, thorough
+				plan := PlanScan(o)
+				got := int(runScan(t, o).Stats.Requests)
+				if d := plan.Requests - got; d < -got/10-3 || d > got/10+3 {
+					t.Errorf("-e %s, %s, --aggressive %v: estimate %d, the scan sent %d", spec, mode, thorough, plan.Requests, got)
+				}
 			}
 		}
 	}
@@ -63,7 +65,7 @@ func TestLoginURI(t *testing.T) {
 	if !slices.Contains(reqs, "GET /my-login/") || slices.Contains(reqs, "GET /wp-login.php") {
 		t.Errorf("--login-uri should replace wp-login.php: %v", reqs)
 	}
-	if findingByID(r, idRegistration).ID == "" {
+	if findingByID(r, idRegistration) == nil {
 		t.Errorf("registration on the moved login page was not found: %v", findingIDs(r))
 	}
 

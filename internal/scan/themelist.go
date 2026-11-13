@@ -22,7 +22,11 @@ const (
 // pages, and the themes directory listing; brute force of the -e list (vt,
 // t or at) only runs with --themes-detection mixed or aggressive. Each
 // theme's style.css gives its name and version.
-func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Theme) []*Theme {
+//
+// Brute force is the noisy part: the scan first calls this without it,
+// and again with it once the quieter checks are done. The second call
+// reads the same pages and style.css files from the scan's cache.
+func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Theme, brute bool) []*Theme {
 	exclude := map[string]bool{}
 	for t := main; t != nil; t = t.Parent {
 		exclude[strings.ToLower(t.Slug)] = true
@@ -66,6 +70,7 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 	}
 	list := s.opts.Enumerate.Themes
 	switch {
+	case !brute:
 	case len(s.opts.ThemesList) > 0:
 		if s.aggressive() {
 			var slugs []string
@@ -84,8 +89,6 @@ func (s *Scanner) enumerateThemes(ctx context.Context, core *Version, main *Them
 			}
 		}
 		s.bruteForce(ctx, set, "Themes", s.themes, slugs)
-	case !mode.BruteForce() && (list == cli.ItemsPopular || list == cli.ItemsAll):
-		s.notice("-e %st only chooses the themes to brute-force, which --themes-detection passive (the default) does not do: the themes were found from what the site shows. Use --themes-detection mixed to also check every theme on the list.", itemCode(list))
 	}
 
 	comps := set.list()
@@ -148,4 +151,21 @@ func (s *Scanner) themesFromInventory(inv *inventory) (*Theme, []*Theme) {
 		}
 	}
 	return main, others
+}
+
+// wantsThemeBruteForce reports whether the options ask for brute force of
+// themes: the -e list (vt, t or at) with --themes-detection mixed or
+// aggressive, or the themes the user named.
+func (s *Scanner) wantsThemeBruteForce() bool {
+	if !s.aggressive() {
+		return false
+	}
+	return len(s.opts.ThemesList) > 0 || s.opts.ThemesDetection.BruteForce() && s.opts.Enumerate.Themes != cli.ItemsNone
+}
+
+// themeBruteForceNotice explains -e t or at without brute force.
+func (s *Scanner) themeBruteForceNotice() {
+	if list := s.opts.Enumerate.Themes; !s.opts.ThemesDetection.BruteForce() && len(s.opts.ThemesList) == 0 && (list == cli.ItemsPopular || list == cli.ItemsAll) {
+		s.notice("-e %st only chooses the themes to brute-force, which --themes-detection passive (the default) does not do: the themes were found from what the site shows. Use --themes-detection mixed to also check every theme on the list.", itemCode(list))
+	}
 }

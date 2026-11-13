@@ -96,6 +96,9 @@ type Options struct {
 	Resolve          map[string]string `json:"resolve,omitempty"`
 	Threads          int               `json:"threads"`
 	Throttle         string            `json:"throttle,omitempty"`
+	Rate             float64           `json:"rate,omitempty"` // most requests per second; omitted when unlimited
+	Aggressive       bool              `json:"aggressive"`     // --aggressive: every check and the full lists
+	Offline          bool              `json:"offline"`        // WordPress.org was not asked for plugin checksums
 	Timeout          string            `json:"timeout"`
 	MaxScanDuration  string            `json:"max_scan_duration,omitempty"`
 	Proxy            bool              `json:"proxy"`
@@ -115,6 +118,7 @@ func optionsOf(o *cli.ScanOptions) *Options {
 	if out.Enumerate == "" {
 		out.Enumerate = cli.DefaultEnumeration
 	}
+	out.Rate, out.Aggressive, out.Offline = o.Rate, o.Thorough, o.Offline
 	if o.Throttle > 0 {
 		out.Throttle = o.Throttle.String()
 	}
@@ -381,6 +385,9 @@ type Stats struct {
 	Retries        int64   `json:"retries"`         // requests sent again after a network error, a 429 or a 502-504
 	Blocked        int64   `json:"blocked"`         // answers that were a rate limit, an overload or a firewall block page
 	FailedRequests int     `json:"failed_requests"` // requests that failed; errors lists the first maxErrors of them
+	NotFound       int64   `json:"not_found"`       // answers that were 404 or 410: how much of the scan the target's logs show as probing
+	Slowdowns      int64   `json:"slowdowns"`       // times the scan slowed down because the target struggled
+	Pauses         int64   `json:"pauses"`          // pauses it took after several bad answers in a row
 }
 
 // normalize replaces nil slices with empty ones so the JSON report always
