@@ -131,6 +131,15 @@ func countSummary(n int, found, none string) string {
 	if n == 0 {
 		return none
 	}
+	if n == 1 {
+		// "1 pages read", "1 other themes found", "1 files found".
+		for _, plural := range [][2]string{{"pages ", "page "}, {"themes ", "theme "}, {"files ", "file "}, {"warnings", "warning"}} {
+			if strings.HasPrefix(found, plural[0]) || strings.Contains(found, " "+plural[0]) || found == plural[0] {
+				found = strings.Replace(found, plural[0], plural[1], 1)
+				break
+			}
+		}
+	}
 	return fmt.Sprintf("%d %s", n, found)
 }
 

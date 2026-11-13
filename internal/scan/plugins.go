@@ -36,29 +36,39 @@ const (
 // their slug and version, e.g. "performance-lab 3.2.0; plugins: ...".
 var genericGeneratorRe = regexp.MustCompile(`^([a-z0-9][a-z0-9-]*[a-z0-9]) v?([0-9]+(?:\.[0-9]+)+)(?:[;\s]|$)`)
 
-// detectPlugins finds the plugins the site uses, then reads each one's
+// pluginScan carries plugin detection across its two parts: discovery
+// first, then brute force (when asked for) once the quieter checks are
+// done, so that a firewall that bans the brute force does not cost the
+// rest of the scan.
+type pluginScan struct {
+	set       *componentSet
+	inventory []*Plugin           // the exact list from --wp-auth, which replaces detection
+	checked   map[*component]bool // its readme was read and its folder verified
+}
+
+// discoverPlugins finds the plugins the site uses, then reads each one's
 // readme for its version. Discovery (--plugins-detection passive, the
 // default, or mixed) reads the URLs and signatures of the homepage, the
 // 404 page and the crawled pages, the REST API namespaces, the post types
-// in the sitemaps and the plugins directory listing. Brute force of the -e
-// list (vp, p or ap) only runs with --plugins-detection mixed or
-// aggressive. With --wp-auth the REST inventory replaces all of this. core
-// is the detected WordPress version.
-func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
+// in the sitemaps and the plugins directory listing. With --wp-auth the
+// REST inventory replaces all of this. core is the detected WordPress
+// version.
+func (s *Scanner) discoverPlugins(ctx context.Context, core *Version) *pluginScan {
 	if inv := s.restInventory(ctx); inv != nil {
 		for _, p := range inv.plugins {
 			latest(p.Version, s.data.lists.Latest(wordlists.Plugins, p.Slug))
 		}
-		return inv.plugins
+		return &pluginScan{inventory: inv.plugins}
 	}
-	set := newComponentSet()
+	ps := &pluginScan{set: newComponentSet(), checked: map[*component]bool{}}
+	set := ps.set
 	prefix := s.plugins.Path
-	mode := s.opts.PluginsDetection
-	if mode.Discover() {
+	if s.opts.PluginsDetection.Discover() {
 		s.steps().Update(stepPlugins, "reading pages")
 		pages := s.discoveryPages(ctx)
 		s.pluginsFromPages(set, pages, prefix, core)
 		s.pluginsFromSignatures(set, pages)
+		s.pluginsFromInlineData(set, pages, prefix, core)
 		if s.passive() {
 			s.pluginsFromREST(ctx, set)
 		}
@@ -73,37 +83,80 @@ func (s *Scanner) detectPlugins(ctx context.Context, core *Version) []*Plugin {
 			}
 		}
 	}
+	s.checkPlugins(ctx, ps)
+	return ps
+}
+
+// wantsPluginBruteForce reports whether the options ask for brute force
+// of plugins: the -e list (vp, p or ap) with --plugins-detection mixed or
+// aggressive, or the plugins the user named.
+func (s *Scanner) wantsPluginBruteForce() bool {
+	if !s.aggressive() {
+		return false
+	}
+	return len(s.opts.PluginsList) > 0 || s.opts.PluginsDetection.BruteForce() && s.opts.Enumerate.Plugins != cli.ItemsNone
+}
+
+// bruteForcePlugins requests the folder of every plugin of the list, then
+// reads the readmes of those it found.
+func (s *Scanner) bruteForcePlugins(ctx context.Context, ps *pluginScan) {
+	if ps.inventory != nil {
+		return
+	}
 	list := s.opts.Enumerate.Plugins
 	switch {
 	case len(s.opts.PluginsList) > 0:
 		// The user named the plugins to check: exactly those, whatever
 		// --plugins-detection says.
 		if s.aggressive() {
-			s.bruteForce(ctx, set, "Plugins", s.plugins, s.opts.PluginsList)
+			s.bruteForce(ctx, ps.set, "Plugins", s.plugins, s.opts.PluginsList)
 		}
-	case mode.BruteForce() && s.aggressive() && list != cli.ItemsNone:
-		s.bruteForce(ctx, set, "Plugins", s.plugins, s.bruteList(wordlists.Plugins, list))
-	case !mode.BruteForce() && (list == cli.ItemsPopular || list == cli.ItemsAll):
+	case s.wantsPluginBruteForce():
+		s.bruteForce(ctx, ps.set, "Plugins", s.plugins, s.bruteList(wordlists.Plugins, list))
+	case !s.opts.PluginsDetection.BruteForce() && (list == cli.ItemsPopular || list == cli.ItemsAll):
 		s.notice("-e %sp only chooses the plugins to brute-force, which --plugins-detection passive (the default) does not do: the plugins were found from what the site shows. Use --plugins-detection mixed to also check every plugin on the list.", itemCode(list))
 	}
+	s.checkPlugins(ctx, ps)
+}
 
-	comps := set.list()
-	if s.aggressive() {
-		var read atomic.Int32
-		s.parallel(ctx, len(comps), func(i int) {
-			s.readReadme(ctx, set, comps[i], s.plugins)
-			s.verify(ctx, set, comps[i], s.plugins)
-			s.steps().Update(stepPlugins, fmt.Sprintf("%d/%d checked", read.Add(1), len(comps)))
-		})
+// checkPlugins reads the readme and verifies the folder of the plugins
+// found since the last call.
+func (s *Scanner) checkPlugins(ctx context.Context, ps *pluginScan) {
+	if !s.aggressive() {
+		return
+	}
+	var todo []*component
+	for _, c := range ps.set.list() {
+		if !ps.checked[c] {
+			todo = append(todo, c)
+		}
+	}
+	var read atomic.Int32
+	s.parallel(ctx, len(todo), func(i int) {
+		s.readReadme(ctx, ps.set, todo[i], s.plugins)
+		s.verify(ctx, ps.set, todo[i], s.plugins)
+		s.steps().Update(stepPlugins, fmt.Sprintf("%d/%d checked", read.Add(1), len(todo)))
+	})
+	if ctx.Err() == nil {
+		for _, c := range todo {
+			ps.checked[c] = true
+		}
+	}
+}
+
+// pluginList is the plugins found so far, as the report shows them.
+func (s *Scanner) pluginList(ps *pluginScan) []*Plugin {
+	if ps.inventory != nil {
+		return ps.inventory
 	}
 	var out []*Plugin
-	for _, c := range comps {
+	for _, c := range ps.set.list() {
 		if !s.keep(c) {
 			continue
 		}
 		p := &Plugin{
 			Slug: c.slug, Name: c.name, ReadmeURL: c.readme,
-			Confidence: combine(c.evidence), Evidence: c.evidence, Version: combineVersions(c.versions),
+			Confidence: combine(c.evidence), Evidence: slices.Clone(c.evidence), Version: combineVersions(slices.Clone(c.versions)),
 		}
 		if c.observed || c.confirmed {
 			p.Location = under(s.plugins, c.slug+"/")
@@ -451,13 +504,33 @@ func (s *Scanner) pluginsFromREST(ctx context.Context, set *componentSet) {
 	}
 }
 
-// readReadme reads a plugin's readme for its name and version. dir is the
-// plugins directory.
+// readReadme reads a plugin's readme for its name and version, then, while
+// the version is not settled, tries the other ways to read it, from the
+// cheapest to the dearest:
+//
+//  1. readme.txt: the stable tag and the changelog;
+//  2. changelog.txt;
+//  3. the banner comment of the plugin's own scripts and stylesheets;
+//  4. the hashes of its files against WordPress.org's checksums of every
+//     release, which settles it for a plugin WordPress.org hosts;
+//  5. the header of its translation template.
+//
+// --aggressive tries all of them, with the rarer names of each file and
+// package.json. dir is the plugins directory.
 func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *component, dir *url.URL) {
 	base := under(dir, c.slug+"/")
-	for _, name := range []string{"readme.txt", "README.txt", "readme.md"} {
+	readmes, changelogs := []string{"readme.txt"}, []string{"changelog.txt"}
+	if s.thorough() {
+		readmes = append(readmes, "README.txt", "readme.md")
+		changelogs = append(changelogs, "CHANGELOG.md", "CHANGELOG.txt")
+	}
+	refused := false // the server refuses text files in the plugin's folder
+	for _, name := range readmes {
 		u := base + name
 		res := s.get(ctx, u)
+		if res != nil && (res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusUnauthorized) {
+			refused = true
+		}
 		if res == nil || res.StatusCode != 200 {
 			continue
 		}
@@ -477,28 +550,38 @@ func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *componen
 		if info.changelog != "" {
 			c.versions = append(c.versions, Evidence{Method: name + " changelog", Mode: modeAggressive, URL: u, Value: info.changelog, Confidence: confVersionChangelog})
 		}
-		// Only the readme's own version ends the search: a ?ver= seen on
-		// the pages is often the WordPress version or a cache buster.
+		// The readme's own version ends the search: a ?ver= seen on the
+		// pages is often the WordPress version or a cache buster.
 		hasVersion := info.stableTag != "" || info.changelog != ""
 		set.mu.Unlock()
-		if hasVersion {
+		if hasVersion && !s.thorough() {
 			return
 		}
 		break
 	}
-	// No version yet: some plugins keep the changelog in its own file.
-	for _, name := range []string{"changelog.txt", "CHANGELOG.md", "CHANGELOG.txt"} {
-		u := base + name
-		res := s.get(ctx, u)
-		if res == nil || res.StatusCode != 200 {
-			continue
-		}
-		if v := newestVersion(string(res.Body[:min(len(res.Body), 256<<10)])); v != "" && !isHTML(res.Body) {
-			set.addVersion(c.slug, Evidence{Method: name, Mode: modeAggressive, URL: u, Value: v, Confidence: confVersionChangelog})
-			return
+	// Some plugins keep the changelog in its own file. A server that
+	// answered 403 for readme.txt would do the same for it.
+	if !refused || s.thorough() {
+		for _, name := range changelogs {
+			if s.pluginVersionSettled(set, c) {
+				break
+			}
+			u := base + name
+			res := s.get(ctx, u)
+			if res == nil || res.StatusCode != 200 {
+				continue
+			}
+			if v := newestVersion(string(res.Body[:min(len(res.Body), 256<<10)])); v != "" && !isHTML(res.Body) {
+				set.addVersion(c.slug, Evidence{Method: name, Mode: modeAggressive, URL: u, Value: v, Confidence: confVersionChangelog})
+				set.confirm(c.slug)
+				break
+			}
 		}
 	}
-	// Last, the banner of one of the plugin's own files the pages load.
+	if s.pluginVersionSettled(set, c) {
+		return
+	}
+	// The banner of one of the plugin's own files the pages load.
 	set.mu.Lock()
 	assets := slices.Clone(c.assets)
 	set.mu.Unlock()
@@ -508,6 +591,17 @@ func (s *Scanner) readReadme(ctx context.Context, set *componentSet, c *componen
 	}
 	if live {
 		set.confirm(c.slug) // its files answer: verify needs no request
+	}
+	if s.pluginVersionSettled(set, c) {
+		return
+	}
+	s.hashVersionOfPlugin(ctx, set, c, dir)
+	if s.pluginVersionSettled(set, c) {
+		return
+	}
+	s.potVersion(ctx, set, c, dir)
+	if s.thorough() {
+		s.packageVersion(ctx, set, c, dir)
 	}
 }
 

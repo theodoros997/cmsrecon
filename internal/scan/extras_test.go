@@ -36,25 +36,55 @@ func TestCoreVersionFromFileHashes(t *testing.T) {
 	f := newFakeWP(t).addBaseSite() // its pages say 6.4.2
 	f.routes["/wp-includes/js/wp-embed.min.js"] = respond(200, "application/javascript", "embed-a")
 	f.routes["/wp-includes/css/dashicons.min.css"] = respond(200, "text/css", "dash-b")
+	hashed := func(f *fakeWP) (n int) {
+		for _, req := range f.requested() {
+			if strings.Contains(req, "wp-embed.min.js") || strings.Contains(req, "dashicons.min.css") {
+				n++
+			}
+		}
+		return n
+	}
 	o := options(f.URL(), cli.ModeMixed)
 	o.DataDir = t.TempDir()
 	writeCoreHashes(t, o.DataDir)
 	r := runScan(t, o)
+	// The feed and the meta tag agree: the version is settled, and no
+	// core file is downloaded to hash it.
+	if r.Version.Number != "6.4.2" || r.Version.Confidence < settledConfidence || hashed(f) != 0 {
+		t.Errorf("version = %s (%d%%) after %d core files; a settled version needs none", r.Version.Number, r.Version.Confidence, hashed(f))
+	}
 
+	// A site that hides its version everywhere gets the file hashes.
+	f = newFakeWP(t).addBaseSite()
+	f.routes["/"] = respond(200, "text/html", `<html><head><link rel="stylesheet" href="{{URL}}wp-content/themes/lab-child/style.css" /></head><body class="wp-theme-lab-child"><a href="{{URL}}wp-login.php">Log in</a></body></html>`)
+	delete(f.routes, "/feed/")
+	delete(f.routes, "/comments/feed/")
+	f.routes["/wp-includes/js/wp-embed.min.js"] = respond(200, "application/javascript", "embed-a")
+	f.routes["/wp-includes/css/dashicons.min.css"] = respond(200, "text/css", "dash-b")
+	o = options(f.URL(), cli.ModeMixed)
+	o.DataDir = t.TempDir()
+	writeCoreHashes(t, o.DataDir)
+	r = runScan(t, o)
 	if r.Version.Number != "6.4.2" || r.Version.Confidence != 100 {
-		t.Errorf("version = %s (%d%%)", r.Version.Number, r.Version.Confidence)
+		t.Errorf("hidden version = %s (%d%%), evidence %v", r.Version.Number, r.Version.Confidence, methods(r.Version.Evidence))
 	}
 	if !slices.Contains(methods(r.Version.Evidence), "File hashes") {
 		t.Errorf("evidence = %v", methods(r.Version.Evidence))
 	}
-	var hashed int
-	for _, req := range f.requested() {
-		if strings.Contains(req, "wp-embed.min.js") || strings.Contains(req, "dashicons.min.css") {
-			hashed++
-		}
+	if n := hashed(f); n != 2 {
+		t.Errorf("%d core files downloaded, want 2", n)
 	}
-	if hashed != 2 {
-		t.Errorf("%d core files downloaded, want 2", hashed)
+
+	// --aggressive checks the hashes even when the pages say the version.
+	f = newFakeWP(t).addBaseSite()
+	f.routes["/wp-includes/js/wp-embed.min.js"] = respond(200, "application/javascript", "embed-a")
+	f.routes["/wp-includes/css/dashicons.min.css"] = respond(200, "text/css", "dash-b")
+	o = options(f.URL(), cli.ModeMixed)
+	o.DataDir, o.Thorough = t.TempDir(), true
+	writeCoreHashes(t, o.DataDir)
+	r = runScan(t, o)
+	if r.Version.Number != "6.4.2" || r.Version.Confidence != 100 || hashed(f) != 2 {
+		t.Errorf("--aggressive: version = %s (%d%%) after %d core files", r.Version.Number, r.Version.Confidence, hashed(f))
 	}
 
 	t.Run("passive mode downloads nothing", func(t *testing.T) {

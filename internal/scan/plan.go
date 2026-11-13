@@ -11,23 +11,28 @@ type Plan struct {
 	Data    *DataInfo
 	Notices []string // about the data: missing or old
 	// Requests is an estimate before anything is found: each plugin or
-	// theme the scan finds adds about perComponent more.
+	// theme the scan finds adds about PerComponent more.
 	Requests          int
+	PerComponent      int
 	PluginsBruteForce int // slugs checked one by one; 0 when none
 	ThemesBruteForce  int
 }
 
 // Request counts measured on a test site with nothing to find (see
-// TestPlanEstimate), for the default 10 crawled pages.
+// TestPlanEstimate). Each pair is a default scan, which tries the
+// likeliest names, and --aggressive, which tries them all.
+var (
+	planBase          = [2]int{45, 73} // pre-flight, homepage, 404 baselines, discovery, version checks and the single-path findings
+	planConfigBackups = [2]int{likelyConfigBackups, len(configBackupNames)}
+	planDBExports     = [2]int{21, 81}
+	planBackupFolders = [2]int{likelyBackupFolders, len(backupFolders)}
+)
+
 const (
-	planBase          = 41 // pre-flight, homepage, 404 baselines, discovery and version checks
-	planConfigBackups = 38
-	planDBExports     = 81
-	planBackupFolders = 23
-	planUsers         = 6  // plus one per author ID
-	planMedia         = 2  // plus one per attachment ID when the REST API is closed
-	planTimthumbs     = 39 // grows with the themes and plugins found
-	perComponent      = 6
+	planUsers     = 6  // plus one per author ID
+	planMedia     = 2  // plus one per attachment ID when the REST API is closed
+	planTimthumbs = 39 // grows with the themes and plugins found
+	perComponent  = 4  // a readme, a changelog or a file to hash, and a check of the folder
 )
 
 // PlanScan reads the data directory and estimates what a scan with these
@@ -36,22 +41,26 @@ func PlanScan(o *cli.ScanOptions) *Plan {
 	s := New(o, nil)
 	s.res = &Result{}
 	s.loadData()
-	p := &Plan{Data: s.res.VulnerabilityData, Notices: s.res.Notices}
+	p := &Plan{Data: s.res.VulnerabilityData, Notices: s.res.Notices, PerComponent: perComponent}
 	if !s.aggressive() {
 		p.Requests = 5 // the homepage, the 404 page and the feeds they link to
 		return p
 	}
 
 	e := o.Enumerate
-	p.Requests = planBase + o.CrawlPages
+	tier := 0
+	if s.thorough() {
+		tier = 1
+	}
+	p.Requests = planBase[tier] + o.CrawlPages
 	if e.ConfigBackups {
-		p.Requests += planConfigBackups
+		p.Requests += planConfigBackups[tier]
 	}
 	if e.DBExports {
-		p.Requests += planDBExports
+		p.Requests += planDBExports[tier]
 	}
 	if e.BackupFolders {
-		p.Requests += planBackupFolders
+		p.Requests += planBackupFolders[tier]
 	}
 	if r := e.Users; r != nil {
 		p.Requests += planUsers + r.To - r.From + 1

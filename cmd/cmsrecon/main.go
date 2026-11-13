@@ -374,7 +374,11 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 	if len(o.Scope) > 0 {
 		row("Also in scope", strings.Join(o.Scope, ", "))
 	}
-	row("Detection mode", string(o.DetectionMode))
+	mode := string(o.DetectionMode)
+	if o.Thorough {
+		mode += ", --aggressive: every check and the full lists"
+	}
+	row("Detection mode", mode)
 	e := o.Enumerate
 	if o.WPAuth != nil {
 		row("Plugins and themes", "REST API inventory as "+o.WPAuth.Username)
@@ -412,10 +416,16 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 	row("Backup folders", yesNo(e.BackupFolders))
 
 	concurrency := fmt.Sprintf("%d threads", o.Threads)
-	if o.Throttle > 0 {
+	switch {
+	case o.Throttle > 0:
 		concurrency = fmt.Sprintf("1 thread, %s between requests", o.Throttle)
+	case o.Rate > 0:
+		concurrency += fmt.Sprintf(", at most %g requests per second", o.Rate)
 	}
-	row("Concurrency", concurrency)
+	row("Concurrency", concurrency+"; slower by itself if the site starts to refuse requests")
+	if !o.Offline && o.DetectionMode != cli.ModePassive && o.WPAuth == nil {
+		row("WordPress.org", "asked for the checksums of plugins whose version stays uncertain (--offline to skip)")
+	}
 	if o.MaxScanDuration > 0 {
 		row("Max duration", o.MaxScanDuration.String())
 	}
@@ -445,14 +455,17 @@ func printPlan(w io.Writer, o *cli.ScanOptions) {
 	row("Data", dataPlan(o.DataDir, plan.Data))
 	requests := fmt.Sprintf("about %d", plan.Requests)
 	if o.DetectionMode != cli.ModePassive {
-		requests += ", plus about 6 for each plugin and theme found"
+		requests += fmt.Sprintf(", plus about %d for each plugin and theme found", plan.PerComponent)
 	}
 	if o.Update {
 		requests += ", after \"cmsrecon update\" (--update)"
 	}
 	row("Requests", requests)
-	if o.Throttle > 0 {
+	switch {
+	case o.Throttle > 0:
 		row("Duration", "at least "+(time.Duration(plan.Requests)*o.Throttle).Round(time.Second).String()+" (--throttle)")
+	case o.Rate > 0 && float64(plan.Requests)/o.Rate >= 60:
+		row("Duration", "at least "+time.Duration(float64(plan.Requests)/o.Rate*float64(time.Second)).Round(time.Minute).String()+" (--rate)")
 	}
 	tw.Flush()
 	for _, n := range plan.Notices {

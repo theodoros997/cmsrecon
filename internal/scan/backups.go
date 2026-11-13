@@ -24,17 +24,25 @@ const (
 // configBackupNames are copies of wp-config.php that editors, admins and
 // deployment tools leave behind, and that the server returns as text
 // instead of running them. This list is cmsrecon's own.
+//
+// The first likelyConfigBackups are what editors and admins leave most
+// often (nano's .save, vim's .swp and ~, a manual .bak or .old); a scan
+// tries only those unless --aggressive asks for all of them.
 var configBackupNames = []string{
-	"wp-config.php.bak", "wp-config.php.bk", "wp-config.php.bkp", "wp-config.php.backup",
-	"wp-config.php.old", "wp-config.php.orig", "wp-config.php.original", "wp-config.php.save",
-	"wp-config.php.saved", "wp-config.php.swp", "wp-config.php.swo", "wp-config.php~",
-	"wp-config.php.txt", "wp-config.php.tmp", "wp-config.php.temp", "wp-config.php.dist",
-	"wp-config.php.inc", "wp-config.php.copy", "wp-config.php.1", "wp-config.php.2",
-	"wp-config.php_bak", "wp-config.php_old", "wp-config.php_orig", "wp-config.php-bak",
-	"wp-config.php-old", "wp-config.php-backup", "wp-config.php.new", "wp-config.php.prod",
-	"wp-config.php.dev", "wp-config.php.html", "wp-config.bak", "wp-config.old", "wp-config.txt",
-	"wp-config.orig", "wp-config.save", "wp-config.backup", ".wp-config.php.swp", "#wp-config.php#",
+	"wp-config.php.bak", "wp-config.php.old", "wp-config.php.save", "wp-config.php~",
+	"wp-config.php.swp", ".wp-config.php.swp", "wp-config.php.orig", "wp-config.php.txt",
+	"wp-config.php.backup", "wp-config.php.bk", "wp-config.bak", "wp-config.old",
+	"wp-config.txt", "wp-config.php.1",
+
+	"wp-config.php.bkp", "wp-config.php.original", "wp-config.php.saved", "wp-config.php.swo",
+	"wp-config.php.tmp", "wp-config.php.temp", "wp-config.php.dist", "wp-config.php.inc",
+	"wp-config.php.copy", "wp-config.php.2", "wp-config.php_bak", "wp-config.php_old",
+	"wp-config.php_orig", "wp-config.php-bak", "wp-config.php-old", "wp-config.php-backup",
+	"wp-config.php.new", "wp-config.php.prod", "wp-config.php.dev", "wp-config.php.html",
+	"wp-config.orig", "wp-config.save", "wp-config.backup", "#wp-config.php#",
 }
+
+const likelyConfigBackups = 14
 
 var (
 	// configDefineRe matches the constants of a wp-config.php.
@@ -52,8 +60,12 @@ func (s *Scanner) checkConfigBackups(ctx context.Context) []Finding {
 	var out []Finding
 	// wp-config.php sits in the site root, or next to WordPress when it
 	// has its own directory: both are checked.
+	names := configBackupNames
+	if !s.thorough() {
+		names = names[:likelyConfigBackups]
+	}
 	var urls []string
-	for _, name := range configBackupNames {
+	for _, name := range names {
 		urls = append(urls, s.url(name))
 		if c := s.coreURL(name); c != s.url(name) {
 			urls = append(urls, c)
@@ -96,6 +108,9 @@ func (s *Scanner) checkConfigBackups(ctx context.Context) []Finding {
 // dbExportPaths returns the database export paths to try: generic names
 // and names derived from the host, at the site root, in wp-content and in
 // backup folders. The uploads folder's dump.sql has its own finding.
+//
+// Without --aggressive only the likeliest are tried: the names from the
+// host and the commonest generic ones, in the site root.
 func (s *Scanner) dbExportPaths() []string {
 	host := strings.ToLower(s.base.Hostname())
 	bare := strings.TrimPrefix(host, "www.")
@@ -104,6 +119,15 @@ func (s *Scanner) dbExportPaths() []string {
 	generic := []string{"wordpress", "wp", "backup", "database", "db", "dump", "data", "mysql", "site", "db_backup", "backup_db", "sql", "export", "localhost"}
 
 	var paths []string
+	if !s.thorough() {
+		for _, n := range append(append([]string{}, domainNames...), "backup", "database", "db", "dump", "wordpress", "site") {
+			paths = append(paths, n+".sql", n+".sql.gz")
+		}
+		for _, n := range domainNames {
+			paths = append(paths, n+".zip")
+		}
+		return uniqueStrings(paths)
+	}
 	for _, n := range append(append([]string{}, domainNames...), generic...) {
 		paths = append(paths, n+".sql", n+".sql.gz")
 	}
@@ -207,14 +231,21 @@ func nonEmpty(list ...string) []string {
 
 // backupFolders are folders where backup plugins store their archives,
 // relative to wp-content. backup-db/ has its own finding.
+//
+// The first likelyBackupFolders belong to the most installed backup
+// plugins; a scan tries only those unless --aggressive asks for all.
 var backupFolders = []string{
-	"updraft/", "backups/", "backup/", "ai1wm-backups/", "backups-dup-lite/", "backups-dup-pro/",
-	"wp-snapshots/", "wpvividbackups/", "ebwp-backups/", "wp-clone/", "uploads/backup-guard/",
-	"uploads/wp-clone/", "uploads/wpbackitup_backups/", "uploads/backupbuddy_backups/",
+	"updraft/", "ai1wm-backups/", "backups-dup-lite/", "wpvividbackups/", "backups/", "backup/",
+	"uploads/backupbuddy_backups/", "uploads/backup-guard/", "uploads/wp-migrate-db/", "uploads/backups/",
+
+	"backups-dup-pro/", "wp-snapshots/", "ebwp-backups/", "wp-clone/",
+	"uploads/wp-clone/", "uploads/wpbackitup_backups/",
 	"uploads/pb_backupbuddy/", "uploads/snapshots/", "uploads/ithemes-security/backups/",
-	"uploads/wp-migrate-db/", "uploads/db-backup/", "uploads/backup/", "uploads/backups/",
+	"uploads/db-backup/", "uploads/backup/",
 	"uploads/wp-backup/", "uploads/wpvividbackups/",
 }
+
+const likelyBackupFolders = 10
 
 // checkBackupFolders looks for backup plugin folders with directory
 // listing (-e bf): only a listing shows that the backups can be
@@ -223,10 +254,14 @@ func (s *Scanner) checkBackupFolders(ctx context.Context) []Finding {
 	if !s.aggressive() || !s.opts.Enumerate.BackupFolders {
 		return nil
 	}
+	folders := backupFolders
+	if !s.thorough() {
+		folders = folders[:likelyBackupFolders]
+	}
 	var mu sync.Mutex
 	var out []Finding
-	s.parallel(ctx, len(backupFolders), func(i int) {
-		u := s.contentURL(backupFolders[i])
+	s.parallel(ctx, len(folders), func(i int) {
+		u := s.contentURL(folders[i])
 		res := s.get(ctx, u)
 		files, ok := s.dirListing(res)
 		if !ok {

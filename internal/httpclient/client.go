@@ -83,6 +83,9 @@ type Stats struct {
 	BytesReceived int64
 	Retries       int64 // requests sent again after a network error, a 429 or a 502-504
 	Blocked       int64 // answers that were a rate limit, an overload or a firewall block page
+	NotFound      int64 // answers that were 404 or 410: what the target's logs show as probing
+	Slowdowns     int64 // times the client slowed down because the target struggled
+	Pauses        int64 // cool-downs it took after several bad answers in a row
 }
 
 // Client sends scan requests. It is safe for concurrent use.
@@ -93,10 +96,7 @@ type Client struct {
 	cookie    string
 	auth      *cli.Credentials
 	sem       chan struct{}
-	throttle  time.Duration
-
-	throttleMu sync.Mutex
-	nextSlot   time.Time
+	pace      *pacer
 
 	scopeMu sync.RWMutex
 	hosts   map[string]bool // exact hostnames
@@ -104,6 +104,7 @@ type Client struct {
 
 	requests, sent, received atomic.Int64
 	retries, blocked         atomic.Int64
+	notFound                 atomic.Int64
 
 	logMu sync.Mutex
 	log   *os.File // --log-requests; nil when off
@@ -122,7 +123,7 @@ type Client struct {
 const (
 	maxRetries        = 2                // extra attempts for an idempotent request
 	maxRetryAfter     = 30 * time.Second // the longest Retry-After honoured
-	tripAfter         = 25               // failed or blocked answers in a row that trip the breaker
+	tripAfter         = 3 * coolAfter    // failed or blocked answers in a row that trip the breaker, after two cool-downs
 	maxConnectTimeout = 15 * time.Second
 	blockPageBytes    = 8 << 10 // how much of a body is searched for a block page
 )
@@ -137,7 +138,7 @@ func New(o *cli.ScanOptions) (*Client, error) {
 		cookie:    o.Cookie,
 		auth:      o.HTTPAuth,
 		sem:       make(chan struct{}, threads),
-		throttle:  o.Throttle,
+		pace:      newPacer(o.Throttle, o.Rate),
 		hosts:     map[string]bool{},
 	}
 	if o.Target != nil {
@@ -283,12 +284,16 @@ func (c *Client) Scope() []string {
 
 // Stats returns the request and byte counters.
 func (c *Client) Stats() Stats {
+	slowed, pauses := c.pace.counts()
 	return Stats{
 		Requests:      c.requests.Load(),
 		BytesSent:     c.sent.Load(),
 		BytesReceived: c.received.Load(),
 		Retries:       c.retries.Load(),
 		Blocked:       c.blocked.Load(),
+		NotFound:      c.notFound.Load(),
+		Slowdowns:     int64(slowed),
+		Pauses:        int64(pauses),
 	}
 }
 
@@ -361,9 +366,17 @@ func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 		if errors.Is(err, ErrOutOfScope) || ctx.Err() != nil {
 			return res, err
 		}
+		// Slow down at the first sign of trouble, before it becomes a ban.
+		c.pace.report(err != nil || res.SiteBlocked)
+		if res != nil && (res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusGone) {
+			c.notFound.Add(1)
+		}
 		limit := maxRetries
 		if isTimeout(err) {
 			limit = 1 // a slow server gets one more chance, not two
+			if c.consecutiveBad() >= coolAfter {
+				limit = 0 // it has stopped answering: the pauses do the waiting
+			}
 		}
 		retry := idempotent && attempt < limit && (transient(err) || (err == nil && retryStatus(res.StatusCode)))
 		if !retry {
@@ -454,15 +467,27 @@ func (c *Client) record(res *Response, err error) {
 	c.consecutive++
 	c.lastBad = bad
 	var notify func(string)
-	if c.consecutive >= tripAfter && c.failing == "" {
-		c.failing = fmt.Sprintf("%d requests in a row failed or were refused: %s", c.consecutive, bad)
+	switch {
+	case c.failing != "":
+	case c.consecutive >= tripAfter:
+		c.failing = fmt.Sprintf("%d requests in a row failed or were refused, after two pauses: %s", c.consecutive, bad)
 		notify = c.onFailing
+	case c.consecutive%coolAfter == 0:
+		// Give a rate limit or a short ban the time to lift, then try
+		// again, one request at a time.
+		c.pace.pause()
 	}
 	reason := c.failing
 	c.healthMu.Unlock()
 	if notify != nil {
 		notify(reason)
 	}
+}
+
+func (c *Client) consecutiveBad() int {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	return c.consecutive
 }
 
 func shortError(err error) string {
@@ -538,9 +563,11 @@ func (c *Client) doOnce(ctx context.Context, method string, r Request) (*Respons
 		return nil, err
 	}
 	defer func() { <-c.sem }()
-	if err := c.wait(ctx); err != nil {
+	leave, err := c.pace.enter(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer leave()
 
 	c.requests.Add(1)
 	resp, err := c.hc.Do(req)
@@ -620,33 +647,6 @@ func (c *Client) acquire(ctx context.Context) error {
 }
 
 // wait enforces the --throttle delay between the starts of two requests.
-func (c *Client) wait(ctx context.Context) error {
-	if c.throttle <= 0 {
-		return nil
-	}
-	c.throttleMu.Lock()
-	now := time.Now()
-	slot := c.nextSlot
-	if slot.Before(now) {
-		slot = now
-	}
-	c.nextSlot = slot.Add(c.throttle)
-	c.throttleMu.Unlock()
-
-	d := time.Until(slot)
-	if d <= 0 {
-		return nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 // countingConn counts the bytes read from and written to a connection.
 type countingConn struct {
 	net.Conn

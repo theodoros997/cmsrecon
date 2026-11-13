@@ -193,3 +193,23 @@ func TestReadJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestsText(t *testing.T) {
+	r := sampleResult()
+	r.Stats.NotFound = 17
+	var b bytes.Buffer
+	if err := WriteCLI(&b, r, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), `Finished in 4.2s: 42 requests (17 answered "not found"), 8.8 KB sent, 1.4 MB received`) {
+		t.Errorf("final line:\n%s", b.String()[max(0, b.Len()-200):])
+	}
+	b.Reset()
+	if err := WriteHTML(&b, r); err != nil || !strings.Contains(b.String(), `42, 17 of them answered "not found"`) {
+		t.Errorf("HTML requests row missing: %v", err)
+	}
+	b.Reset()
+	if err := WriteMarkdown(&b, r); err != nil || !strings.Contains(b.String(), `17 answered "not found"`) {
+		t.Errorf("Markdown requests row missing: %v", err)
+	}
+}

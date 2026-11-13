@@ -200,7 +200,7 @@ code { font-size: 13px; background: var(--panel); padding: 0 3px; border-radius:
 <tr><th>Target</th><td>{{.Target.URL}}{{if ne .Target.URL .Target.EffectiveURL}} → {{.Target.EffectiveURL}}{{end}}</td></tr>
 <tr><th>Started, finished</th><td>{{.StartedAt.Format "2006-01-02 15:04:05 UTC"}}, {{.FinishedAt.Format "2006-01-02 15:04:05 UTC"}}</td></tr>
 <tr><th>Detection mode</th><td>{{.DetectionMode}}{{with .Options}}; plugins {{.PluginsDetection}}, themes {{.ThemesDetection}}; -e {{.Enumerate}}; {{.Threads}} threads{{if .Throttle}}, {{.Throttle}} between requests{{end}}{{end}}</td></tr>
-<tr><th>Requests</th><td>{{.Stats.Requests}} ({{bytes .Stats.BytesSent}} sent, {{bytes .Stats.BytesReceived}} received) in {{seconds .Stats.ElapsedSeconds}}{{if .Stats.FailedRequests}}; {{.Stats.FailedRequests}} failed{{end}}{{if .Stats.Blocked}}; {{.Stats.Blocked}} refused (rate limit, firewall){{end}}</td></tr>
+<tr><th>Requests</th><td>{{.Stats.Requests}}{{if .Stats.NotFound}}, {{.Stats.NotFound}} of them answered "not found"{{end}} ({{bytes .Stats.BytesSent}} sent, {{bytes .Stats.BytesReceived}} received) in {{seconds .Stats.ElapsedSeconds}}{{if .Stats.FailedRequests}}; {{.Stats.FailedRequests}} failed{{end}}{{if .Stats.Blocked}}; {{.Stats.Blocked}} refused (rate limit, firewall){{end}}{{if .Stats.Slowdowns}}; the scan slowed down for the site{{end}}</td></tr>
 <tr><th>User-Agent</th><td>{{.Tool.UserAgent}}</td></tr>
 <tr><th>Vulnerability data</th><td>{{sources .VulnerabilityData}}</td></tr>
 <tr><th>Vulnerabilities</th><td>{{counts .VulnerabilityCounts}}</td></tr>

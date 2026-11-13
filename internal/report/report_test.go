@@ -163,7 +163,7 @@ func TestJSONShape(t *testing.T) {
 		{"data source", first(obj(doc["vulnerability_data"])["sources"]), []string{"entries", "name", "updated_at"}},
 		{"vulnerability_counts", obj(doc["vulnerability_counts"]), []string{"confirmed", "likely", "possible"}},
 		{"error", first(doc["errors"]), []string{"error", "url"}},
-		{"stats", obj(doc["stats"]), []string{"blocked", "bytes_received", "bytes_sent", "elapsed_seconds", "failed_requests", "requests", "retries"}},
+		{"stats", obj(doc["stats"]), []string{"blocked", "bytes_received", "bytes_sent", "elapsed_seconds", "failed_requests", "not_found", "pauses", "requests", "retries", "slowdowns"}},
 	}
 	for _, tt := range tests {
 		if got := keys(tt.got); !slices.Equal(got, tt.want) {

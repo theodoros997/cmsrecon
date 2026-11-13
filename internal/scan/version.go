@@ -28,7 +28,8 @@ const (
 	confFeedGenerator = 80
 	confReadme        = 70
 	confVersionPHP    = 100
-	confLoadStyles    = 60  // ?ver= on load-styles.php or load-scripts.php, which WordPress sets to its version
+	confLoadStyles    = 60  // ?ver= on load-styles.php, load-scripts.php or the emoji script, which WordPress sets to its version
+	confInstallPage   = 80  // ?ver= on the install page, which no plugin or theme can change
 	confHashOne       = 100 // the file hashes match one release only
 	confHashNewest    = 60  // they match the newest release the checksums know, which a later one may look like
 	confHashConfirms  = 90  // they match a few releases, among them the one the other signals found
@@ -66,7 +67,32 @@ var coreVendorPaths = []string{
 
 func validVersion(v string) bool { return versionRe.MatchString(v) }
 
+// settledConfidence is the confidence from which a version needs no more
+// evidence: two independent signals that agree reach it.
+const settledConfidence = 90
+
+// settled reports whether the version is certain enough to stop asking:
+// one number at settledConfidence or more, and no other number a signal
+// seriously suggests.
+func settled(v *Version) bool {
+	if v.Number == "" || v.Confidence < settledConfidence {
+		return false
+	}
+	for _, c := range v.Candidates[1:] {
+		if c.Confidence >= MinVersionConfidence {
+			return false
+		}
+	}
+	return true
+}
+
 // detectVersion runs the core version finders the detection mode allows.
+//
+// The passive ones cost nothing: they read the pages the scan already
+// has. The others are tried from the cheapest to the dearest, and the
+// scan stops at the first that settles the version, so a site that shows
+// its version in its feed costs one request, and only a site that hides it
+// everywhere gets the file hashes. --aggressive tries them all.
 func (s *Scanner) detectVersion(ctx context.Context) *Version {
 	var ev []Evidence
 	linked := map[string]bool{}
@@ -78,27 +104,103 @@ func (s *Scanner) detectVersion(ctx context.Context) *Version {
 			ev = append(ev, s.feedVersion(ctx, u, modePassive)...)
 		}
 	}
-	if s.aggressive() {
-		feeds := []string{s.url("feed/"), s.url("feed/atom/"), s.url("feed/rdf/")}
-		for _, u := range feeds {
-			if !linked[u] {
-				ev = append(ev, s.feedVersion(ctx, u, modeAggressive)...)
+	if !s.aggressive() {
+		return combineVersions(ev)
+	}
+	feeds := []string{s.url("feed/"), s.url("feed/atom/"), s.url("feed/rdf/")}
+	steps := []func() []Evidence{
+		func() []Evidence {
+			if linked[feeds[0]] {
+				return nil
 			}
-		}
-		if res := s.get(ctx, feeds[0]); res == nil || res.StatusCode != 200 {
-			// Without pretty permalinks the feed lives at ?feed=rss2.
-			ev = append(ev, s.feedVersion(ctx, s.urlWithQuery("", "feed=rss2"), modeAggressive)...)
-		}
+			e := s.feedVersion(ctx, feeds[0], modeAggressive)
+			if res := s.get(ctx, feeds[0]); res == nil || res.StatusCode != 200 {
+				// Without pretty permalinks the feed lives at ?feed=rss2.
+				e = append(e, s.feedVersion(ctx, s.urlWithQuery("", "feed=rss2"), modeAggressive)...)
+			}
+			return e
+		},
 		// The crawled pages, the login page among them, load core assets
 		// too (load-styles.php keeps ?ver= when themes strip it).
-		ev = append(ev, s.coreAssetVersions(s.sitePages(ctx).pages)...)
-		ev = append(ev, s.readmeVersion(ctx)...)
-		ev = append(ev, s.versionPHPSource(ctx)...)
-		if cands, u := s.hashVersion(ctx); len(cands) > 0 {
-			ev = append(ev, hashEvidence(cands, u, combineVersions(ev), s.data.hashes.Versions[len(s.data.hashes.Versions)-1])...)
+		func() []Evidence { return s.coreAssetVersions(s.sitePages(ctx).pages) },
+		func() []Evidence { return s.readmeVersion(ctx) },
+		func() []Evidence { return s.opmlVersion(ctx) },
+		func() []Evidence { return s.installPageVersion(ctx) },
+		func() []Evidence { return s.versionPHPSource(ctx) },
+		func() []Evidence {
+			var e []Evidence
+			for _, u := range feeds[1:] {
+				if !linked[u] {
+					e = append(e, s.feedVersion(ctx, u, modeAggressive)...)
+				}
+			}
+			return e
+		},
+		func() []Evidence {
+			cands, u := s.hashVersion(ctx)
+			if len(cands) == 0 {
+				return nil
+			}
+			return hashEvidence(cands, u, combineVersions(ev), s.data.hashes.Versions[len(s.data.hashes.Versions)-1])
+		},
+	}
+	for _, step := range steps {
+		if ctx.Err() != nil || (!s.thorough() && settled(combineVersions(ev))) {
+			break
 		}
+		ev = append(ev, step()...)
 	}
 	return combineVersions(ev)
+}
+
+var opmlGeneratorRe = regexp.MustCompile(`generator="WordPress/([0-9][0-9A-Za-z.-]*)"`)
+
+// opmlVersion reads the generator comment of wp-links-opml.php, which
+// WordPress still serves although the link manager it belongs to is long
+// hidden: themes and plugins that remove the version from pages and feeds
+// often forget it.
+func (s *Scanner) opmlVersion(ctx context.Context) []Evidence {
+	u := s.coreURL("wp-links-opml.php")
+	res := s.get(ctx, u)
+	if res == nil || res.StatusCode != 200 || !bytes.Contains(res.Body, []byte("<opml")) {
+		return nil
+	}
+	if m := opmlGeneratorRe.FindSubmatch(res.Body); m != nil && validVersion(string(m[1])) {
+		return []Evidence{{Method: "wp-links-opml.php generator", Mode: modeAggressive, URL: u, Value: string(m[1]), Confidence: confFeedGenerator}}
+	}
+	return nil
+}
+
+// installPageVersion reads ?ver= on the stylesheets of
+// wp-admin/install.php. On an installed site the page only says so, but
+// WordPress builds it without loading plugins or the theme, so nothing
+// can strip the version from its links.
+func (s *Scanner) installPageVersion(ctx context.Context) []Evidence {
+	u := s.coreURL("wp-admin/install.php")
+	res := s.get(ctx, u)
+	if res == nil || res.StatusCode != 200 || res.Blocked != "" {
+		return nil
+	}
+	versions := map[string]int{}
+	own := false // the page links its own stylesheet: it is the install page, not a soft 404
+	for _, ref := range parsePage(res).urls {
+		_, admin, adm := strings.Cut(ref.Path, "/wp-admin/css/")
+		_, rel, inc := strings.Cut(ref.Path, "/wp-includes/")
+		if !adm && !(inc && !isCoreVendor(rel)) {
+			continue
+		}
+		own = own || strings.HasPrefix(admin, "install")
+		if ver := ref.Query().Get("ver"); validVersion(ver) {
+			versions[ver]++
+		}
+	}
+	if !own || len(versions) != 1 {
+		return nil
+	}
+	for ver := range versions {
+		return []Evidence{{Method: "?ver= on the stylesheets of wp-admin/install.php", Mode: modeAggressive, URL: u, Value: ver, Confidence: confInstallPage}}
+	}
+	return nil
 }
 
 // hashEvidence turns the releases whose files match into evidence. One
@@ -258,6 +360,7 @@ func (s *Scanner) coreAssetVersions(pages []labelledPage) []Evidence {
 	assets := map[string]map[string]bool{} // version -> asset paths
 	example := map[string]string{}
 	loaders := map[string]string{} // version -> a load-styles.php or load-scripts.php URL
+	emoji := map[string]string{}   // version -> the emoji script's URL, from the page's emoji settings
 	mode := modePassive
 	for _, p := range pages {
 		for _, orig := range p.urls {
@@ -283,9 +386,14 @@ func (s *Scanner) coreAssetVersions(pages []labelledPage) []Evidence {
 			if p.mode == modeAggressive {
 				mode = modeAggressive
 			}
-			// WordPress always sets these to its own version.
+			// WordPress always sets these to its own version, whatever
+			// the theme does with the other links.
 			if adm && (admin == "load-styles.php" || admin == "load-scripts.php") {
 				loaders[ver] = u.String()
+				continue
+			}
+			if inc && rel == "js/wp-emoji-release.min.js" {
+				emoji[ver] = u.String()
 				continue
 			}
 			if assets[ver] == nil {
@@ -298,6 +406,9 @@ func (s *Scanner) coreAssetVersions(pages []labelledPage) []Evidence {
 	var ev []Evidence
 	for ver, u := range loaders {
 		ev = append(ev, Evidence{Method: "?ver= on wp-admin's load-styles.php", Mode: mode, URL: u, Value: ver, Confidence: confLoadStyles})
+	}
+	for ver, u := range emoji {
+		ev = append(ev, Evidence{Method: "?ver= on the emoji script", Mode: mode, URL: u, Value: ver, Confidence: confLoadStyles})
 	}
 	for ver, paths := range assets {
 		ev = append(ev, Evidence{

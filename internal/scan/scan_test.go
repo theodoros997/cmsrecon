@@ -27,7 +27,7 @@ func TestMixedScanFindsEverything(t *testing.T) {
 		t.Fatalf("status = %s, stop = %+v", r.Status, r.Stop)
 	}
 	want := []string{
-		idHeaders, idRobots, idXMLRPC, idReadme, idDebugLog, idFullPath, idBackupDB, idDuplicatorLog,
+		idHeaders, idSecurityHeaders, idRobots, idXMLRPC, idReadme, idDebugLog, idFullPath, idBackupDB, idDuplicatorLog,
 		idMuPlugins, idRegistration, idUploadListing, idTmmDBMigrate, idUploadSQLDump, idEmergencyScript,
 		idWPCron, idPHPDisabled, idFantastico, idSearchReplaceDB,
 	}
@@ -91,7 +91,7 @@ func TestPassiveModeOnlyFetchesPagesItWouldReadAnyway(t *testing.T) {
 		}
 		t.Errorf("passive mode requested %s", req)
 	}
-	if got, want := findingIDs(r), []string{idHeaders, idXMLRPC, idMuPlugins}; !slices.Equal(got, want) {
+	if got, want := findingIDs(r), []string{idHeaders, idSecurityHeaders, idXMLRPC, idMuPlugins}; !slices.Equal(got, want) {
 		t.Errorf("findings = %v, want %v", got, want)
 	}
 	for _, f := range r.InterestingFindings {
